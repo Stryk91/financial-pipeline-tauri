@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, Result as SqliteResult};
 use std::path::Path;
 
 use crate::error::Result;
-use crate::models::{DailyPrice, MacroData, Symbol, TechnicalIndicator};
+use crate::models::{AlertCondition, DailyPrice, MacroData, PriceAlert, Symbol, TechnicalIndicator};
 
 /// Database wrapper for financial data storage
 pub struct Database {
@@ -396,6 +396,94 @@ impl Database {
 
         Ok(indicators)
     }
+
+    /// Add a price alert
+    pub fn add_alert(&self, symbol: &str, target_price: f64, condition: AlertCondition) -> Result<i64> {
+        let condition_str = match condition {
+            AlertCondition::Above => "above",
+            AlertCondition::Below => "below",
+        };
+
+        self.conn.execute(
+            r#"
+            INSERT INTO price_alerts (symbol, target_price, condition)
+            VALUES (?1, ?2, ?3)
+            "#,
+            params![symbol, target_price, condition_str],
+        )?;
+
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Get all alerts (optionally filter by triggered status)
+    pub fn get_alerts(&self, only_active: bool) -> Result<Vec<PriceAlert>> {
+        let sql = if only_active {
+            "SELECT id, symbol, target_price, condition, triggered, created_at FROM price_alerts WHERE triggered = 0 ORDER BY created_at DESC"
+        } else {
+            "SELECT id, symbol, target_price, condition, triggered, created_at FROM price_alerts ORDER BY created_at DESC"
+        };
+
+        let mut stmt = self.conn.prepare(sql)?;
+
+        let alerts = stmt
+            .query_map([], |row| {
+                let condition_str: String = row.get(3)?;
+                let condition = if condition_str == "above" {
+                    AlertCondition::Above
+                } else {
+                    AlertCondition::Below
+                };
+
+                Ok(PriceAlert {
+                    id: row.get(0)?,
+                    symbol: row.get(1)?,
+                    target_price: row.get(2)?,
+                    condition,
+                    triggered: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })?
+            .collect::<SqliteResult<Vec<_>>>()?;
+
+        Ok(alerts)
+    }
+
+    /// Delete an alert
+    pub fn delete_alert(&self, alert_id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM price_alerts WHERE id = ?1", params![alert_id])?;
+        Ok(())
+    }
+
+    /// Mark an alert as triggered
+    pub fn trigger_alert(&self, alert_id: i64) -> Result<()> {
+        self.conn.execute("UPDATE price_alerts SET triggered = 1 WHERE id = ?1", params![alert_id])?;
+        Ok(())
+    }
+
+    /// Check alerts against current prices, returns triggered alerts
+    pub fn check_alerts(&self) -> Result<Vec<PriceAlert>> {
+        let alerts = self.get_alerts(true)?;
+        let mut triggered = Vec::new();
+
+        for alert in alerts {
+            if let Ok(Some(current_price)) = self.get_latest_price(&alert.symbol) {
+                let should_trigger = match alert.condition {
+                    AlertCondition::Above => current_price >= alert.target_price,
+                    AlertCondition::Below => current_price <= alert.target_price,
+                };
+
+                if should_trigger {
+                    self.trigger_alert(alert.id)?;
+                    triggered.push(PriceAlert {
+                        triggered: true,
+                        ..alert
+                    });
+                }
+            }
+        }
+
+        Ok(triggered)
+    }
 }
 
 /// Database schema SQL
@@ -511,4 +599,17 @@ CREATE TABLE IF NOT EXISTS technical_indicators (
 
 CREATE INDEX IF NOT EXISTS idx_ti_symbol_date ON technical_indicators(symbol, timestamp);
 CREATE INDEX IF NOT EXISTS idx_ti_indicator ON technical_indicators(indicator_name);
+
+-- Price alerts
+CREATE TABLE IF NOT EXISTS price_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    target_price REAL NOT NULL,
+    condition TEXT NOT NULL CHECK(condition IN ('above', 'below')),
+    triggered BOOLEAN DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_symbol ON price_alerts(symbol);
+CREATE INDEX IF NOT EXISTS idx_alerts_triggered ON price_alerts(triggered);
 "#;

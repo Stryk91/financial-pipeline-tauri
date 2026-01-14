@@ -67,6 +67,24 @@ pub struct TechnicalIndicator {
     pub value: f64,
 }
 
+/// Price alert condition
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlertCondition {
+    Above,
+    Below,
+}
+
+/// Price alert
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriceAlert {
+    pub id: i64,
+    pub symbol: String,
+    pub target_price: f64,
+    pub condition: AlertCondition,
+    pub triggered: bool,
+    pub created_at: String,
+}
+
 /// Yahoo Finance chart response structures
 pub mod yahoo {
     use serde::Deserialize;

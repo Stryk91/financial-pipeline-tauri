@@ -39,5 +39,5 @@ pub use db::Database;
 pub use error::{PipelineError, Result};
 pub use fred::Fred;
 pub use indicators::{calculate_adx, calculate_all, calculate_atr, calculate_bollinger_bands, calculate_ema, calculate_macd, calculate_obv, calculate_rsi, calculate_sma, calculate_stochastic};
-pub use models::{DailyPrice, MacroData, Symbol, TechnicalIndicator, Watchlist};
+pub use models::{AlertCondition, DailyPrice, MacroData, PriceAlert, Symbol, TechnicalIndicator, Watchlist};
 pub use yahoo::YahooFinance;

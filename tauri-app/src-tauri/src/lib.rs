@@ -1,6 +1,6 @@
 //! Tauri GUI backend for Financial Pipeline
 
-use financial_pipeline::{calculate_all, Database, Fred, YahooFinance};
+use financial_pipeline::{calculate_all, AlertCondition, Database, Fred, YahooFinance};
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::State;
@@ -403,6 +403,104 @@ fn search_symbol(query: String) -> Result<Vec<String>, String> {
     Ok(results)
 }
 
+/// Alert data for frontend
+#[derive(Serialize)]
+struct AlertData {
+    id: i64,
+    symbol: String,
+    target_price: f64,
+    condition: String,
+    triggered: bool,
+    created_at: String,
+}
+
+/// Add a price alert
+#[tauri::command]
+fn add_alert(
+    state: State<AppState>,
+    symbol: String,
+    target_price: f64,
+    condition: String,
+) -> Result<CommandResult, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let symbol = symbol.to_uppercase();
+
+    let alert_condition = match condition.to_lowercase().as_str() {
+        "above" => AlertCondition::Above,
+        "below" => AlertCondition::Below,
+        _ => return Err("Invalid condition. Use 'above' or 'below'".to_string()),
+    };
+
+    db.add_alert(&symbol, target_price, alert_condition)
+        .map_err(|e| e.to_string())?;
+
+    println!("[OK] Added alert for {} {} ${:.2}", symbol, condition, target_price);
+
+    Ok(CommandResult {
+        success: true,
+        message: format!("Alert set: {} {} ${:.2}", symbol, condition, target_price),
+    })
+}
+
+/// Get all alerts
+#[tauri::command]
+fn get_alerts(state: State<AppState>, only_active: bool) -> Result<Vec<AlertData>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    let alerts = db.get_alerts(only_active).map_err(|e| e.to_string())?;
+
+    Ok(alerts
+        .into_iter()
+        .map(|a| AlertData {
+            id: a.id,
+            symbol: a.symbol,
+            target_price: a.target_price,
+            condition: match a.condition {
+                AlertCondition::Above => "above".to_string(),
+                AlertCondition::Below => "below".to_string(),
+            },
+            triggered: a.triggered,
+            created_at: a.created_at,
+        })
+        .collect())
+}
+
+/// Delete an alert
+#[tauri::command]
+fn delete_alert(state: State<AppState>, alert_id: i64) -> Result<CommandResult, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    db.delete_alert(alert_id).map_err(|e| e.to_string())?;
+
+    Ok(CommandResult {
+        success: true,
+        message: "Alert deleted".to_string(),
+    })
+}
+
+/// Check alerts against current prices
+#[tauri::command]
+fn check_alerts(state: State<AppState>) -> Result<Vec<AlertData>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    let triggered = db.check_alerts().map_err(|e| e.to_string())?;
+
+    Ok(triggered
+        .into_iter()
+        .map(|a| AlertData {
+            id: a.id,
+            symbol: a.symbol,
+            target_price: a.target_price,
+            condition: match a.condition {
+                AlertCondition::Above => "above".to_string(),
+                AlertCondition::Below => "below".to_string(),
+            },
+            triggered: a.triggered,
+            created_at: a.created_at,
+        })
+        .collect())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize database
@@ -422,6 +520,10 @@ pub fn run() {
             get_price_history,
             export_csv,
             search_symbol,
+            add_alert,
+            get_alerts,
+            delete_alert,
+            check_alerts,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
