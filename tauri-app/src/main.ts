@@ -77,6 +77,7 @@ function switchTab(tabName: string): void {
     if (tabName === 'chart') initializeChart();
     if (tabName === 'indicators') initializeIndicatorChart();
     if (tabName === 'groups') loadGroups();
+    if (tabName === 'ai-search') loadVectorStats();
 }
 
 // Initialize TradingView chart
@@ -970,6 +971,221 @@ async function showIndicatorChart(): Promise<void> {
     }
 }
 
+// ============================================================================
+// AI Search / Vector Database Functions
+// ============================================================================
+
+async function loadVectorStats(): Promise<void> {
+    try {
+        const stats = await api.getVectorStats();
+        document.getElementById('vector-events-count')!.textContent = stats.events_count.toString();
+        document.getElementById('vector-patterns-count')!.textContent = stats.patterns_count.toString();
+        log(`Vector DB: ${stats.events_count} events, ${stats.patterns_count} patterns`, 'info');
+    } catch (error) {
+        log(`Error loading vector stats: ${error}`, 'error');
+    }
+}
+
+async function performAISearch(): Promise<void> {
+    const query = (document.getElementById('ai-search-query') as HTMLInputElement).value.trim();
+    if (!query) {
+        alert('Please enter a search query');
+        return;
+    }
+
+    const resultsDiv = document.getElementById('ai-search-results')!;
+    resultsDiv.innerHTML = '<p>Searching...</p>';
+
+    try {
+        log(`AI Search: "${query}"`, 'info');
+        const results = await api.vectorSearch(query, 10);
+
+        if (results.length === 0) {
+            resultsDiv.innerHTML = '<p class="empty-state">No matching results found. Try a different query or add some events/patterns first.</p>';
+            return;
+        }
+
+        resultsDiv.innerHTML = results.map(r => `
+            <div class="ai-result-item" data-type="${r.result_type}">
+                <div class="ai-result-header">
+                    <span class="ai-result-type ${r.result_type}">${r.result_type.replace('_', ' ')}</span>
+                    <span class="ai-result-score">${(r.score * 100).toFixed(1)}% match</span>
+                    ${r.symbol ? `<span class="ai-result-symbol">${r.symbol}</span>` : ''}
+                </div>
+                <div class="ai-result-content">${r.content}</div>
+                ${r.date ? `<div class="ai-result-date">${r.date}</div>` : ''}
+            </div>
+        `).join('');
+
+        log(`Found ${results.length} results for "${query}"`, 'success');
+    } catch (error) {
+        resultsDiv.innerHTML = `<p class="empty-state error">Error: ${error}</p>`;
+        log(`AI Search error: ${error}`, 'error');
+    }
+}
+
+async function addMarketEventUI(): Promise<void> {
+    const symbol = (document.getElementById('event-symbol') as HTMLInputElement).value.trim().toUpperCase();
+    const eventType = (document.getElementById('event-type') as HTMLSelectElement).value;
+    const title = (document.getElementById('event-title') as HTMLInputElement).value.trim();
+    const content = (document.getElementById('event-content') as HTMLTextAreaElement).value.trim();
+    const date = (document.getElementById('event-date') as HTMLInputElement).value;
+    const sentimentStr = (document.getElementById('event-sentiment') as HTMLInputElement).value;
+    const sentiment = sentimentStr ? parseFloat(sentimentStr) : null;
+
+    if (!symbol || !title || !content || !date) {
+        alert('Please fill in symbol, title, content, and date');
+        return;
+    }
+
+    try {
+        log(`Adding market event for ${symbol}...`, 'info');
+        const result = await api.addMarketEvent(symbol, eventType, title, content, date, sentiment);
+        log(result.message, result.success ? 'success' : 'error');
+        alert(result.message);
+
+        if (result.success) {
+            // Clear form
+            (document.getElementById('event-symbol') as HTMLInputElement).value = '';
+            (document.getElementById('event-title') as HTMLInputElement).value = '';
+            (document.getElementById('event-content') as HTMLTextAreaElement).value = '';
+            (document.getElementById('event-date') as HTMLInputElement).value = '';
+            (document.getElementById('event-sentiment') as HTMLInputElement).value = '';
+            await loadVectorStats();
+        }
+    } catch (error) {
+        log(`Error adding market event: ${error}`, 'error');
+        alert(`Error: ${error}`);
+    }
+}
+
+async function addPricePatternUI(): Promise<void> {
+    const symbol = (document.getElementById('pattern-symbol') as HTMLInputElement).value.trim().toUpperCase();
+    const patternType = (document.getElementById('pattern-type') as HTMLSelectElement).value;
+    const startDate = (document.getElementById('pattern-start-date') as HTMLInputElement).value;
+    const endDate = (document.getElementById('pattern-end-date') as HTMLInputElement).value;
+    const priceChange = parseFloat((document.getElementById('pattern-price-change') as HTMLInputElement).value) || 0;
+    const volumeChange = parseFloat((document.getElementById('pattern-volume-change') as HTMLInputElement).value) || 0;
+    const description = (document.getElementById('pattern-description') as HTMLTextAreaElement).value.trim();
+
+    if (!symbol || !startDate || !endDate || !description) {
+        alert('Please fill in symbol, dates, and description');
+        return;
+    }
+
+    try {
+        log(`Adding price pattern for ${symbol}...`, 'info');
+        const result = await api.addPricePattern(symbol, patternType, startDate, endDate, priceChange, volumeChange, description);
+        log(result.message, result.success ? 'success' : 'error');
+        alert(result.message);
+
+        if (result.success) {
+            // Clear form
+            (document.getElementById('pattern-symbol') as HTMLInputElement).value = '';
+            (document.getElementById('pattern-start-date') as HTMLInputElement).value = '';
+            (document.getElementById('pattern-end-date') as HTMLInputElement).value = '';
+            (document.getElementById('pattern-price-change') as HTMLInputElement).value = '';
+            (document.getElementById('pattern-volume-change') as HTMLInputElement).value = '';
+            (document.getElementById('pattern-description') as HTMLTextAreaElement).value = '';
+            await loadVectorStats();
+        }
+    } catch (error) {
+        log(`Error adding price pattern: ${error}`, 'error');
+        alert(`Error: ${error}`);
+    }
+}
+
+// ============================================================================
+// Claude AI Chat Functions
+// ============================================================================
+
+const CLAUDE_API_KEY_STORAGE = 'fp_claude_api_key';
+
+function loadClaudeApiKey(): void {
+    const savedKey = localStorage.getItem(CLAUDE_API_KEY_STORAGE);
+    const keyInput = document.getElementById('claude-api-key') as HTMLInputElement;
+    const statusSpan = document.getElementById('api-key-status')!;
+
+    if (savedKey) {
+        keyInput.value = savedKey;
+        statusSpan.textContent = 'Key saved';
+        statusSpan.style.color = 'var(--success)';
+    }
+}
+
+function saveClaudeApiKey(): void {
+    const keyInput = document.getElementById('claude-api-key') as HTMLInputElement;
+    const statusSpan = document.getElementById('api-key-status')!;
+    const key = keyInput.value.trim();
+
+    if (key) {
+        localStorage.setItem(CLAUDE_API_KEY_STORAGE, key);
+        statusSpan.textContent = 'Key saved';
+        statusSpan.style.color = 'var(--success)';
+        log('Claude API key saved', 'success');
+    } else {
+        localStorage.removeItem(CLAUDE_API_KEY_STORAGE);
+        statusSpan.textContent = 'Key cleared';
+        statusSpan.style.color = 'var(--text-secondary)';
+    }
+}
+
+async function sendClaudeChat(): Promise<void> {
+    const query = (document.getElementById('claude-chat-query') as HTMLInputElement).value.trim();
+    const apiKey = (document.getElementById('claude-api-key') as HTMLInputElement).value.trim();
+
+    if (!apiKey) {
+        alert('Please enter your Claude API key');
+        return;
+    }
+
+    if (!query) {
+        alert('Please enter a question');
+        return;
+    }
+
+    const responseDiv = document.getElementById('claude-chat-response')!;
+    const metaDiv = document.getElementById('claude-chat-meta')!;
+    const chatBtn = document.getElementById('claude-chat-btn') as HTMLButtonElement;
+
+    responseDiv.innerHTML = '<p style="color: var(--accent);">Asking Claude...</p>';
+    metaDiv.style.display = 'none';
+    chatBtn.disabled = true;
+
+    try {
+        log(`Claude query: "${query.substring(0, 50)}..."`, 'info');
+        const result = await api.claudeChat(query, apiKey);
+
+        // Format the response with markdown-like styling
+        const formattedResponse = result.response
+            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\n\n/g, '</p><p>')
+            .replace(/\n/g, '<br>');
+
+        responseDiv.innerHTML = `<div class="ai-result-item" style="border-left-color: var(--accent);">
+            <div class="ai-result-content"><p>${formattedResponse}</p></div>
+        </div>`;
+
+        // Show metadata
+        document.getElementById('claude-model')!.textContent = result.model;
+        document.getElementById('claude-tokens')!.textContent = `${result.input_tokens} in / ${result.output_tokens} out`;
+        metaDiv.style.display = 'block';
+
+        log(`Claude response received (${result.input_tokens + result.output_tokens} tokens)`, 'success');
+
+        // Clear query input
+        (document.getElementById('claude-chat-query') as HTMLInputElement).value = '';
+
+        // Refresh vector stats since the conversation was saved
+        await loadVectorStats();
+    } catch (error) {
+        responseDiv.innerHTML = `<p class="empty-state" style="color: var(--error);">Error: ${error}</p>`;
+        log(`Claude error: ${error}`, 'error');
+    } finally {
+        chatBtn.disabled = false;
+    }
+}
+
 // Event listeners
 function setupEventListeners(): void {
     // Tab switching
@@ -1243,6 +1459,23 @@ function setupEventListeners(): void {
             if (name && symbols) createPresetGroup(name, symbols, desc || '');
         });
     });
+
+    // AI Search
+    document.getElementById('ai-search-btn')?.addEventListener('click', performAISearch);
+    document.getElementById('ai-search-query')?.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') performAISearch();
+    });
+    document.getElementById('add-event-btn')?.addEventListener('click', addMarketEventUI);
+    document.getElementById('add-pattern-btn')?.addEventListener('click', addPricePatternUI);
+
+    // Claude AI Chat
+    document.getElementById('save-api-key-btn')?.addEventListener('click', saveClaudeApiKey);
+    document.getElementById('claude-chat-btn')?.addEventListener('click', sendClaudeChat);
+    document.getElementById('claude-chat-query')?.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') sendClaudeChat();
+    });
+    // Load saved API key on startup
+    loadClaudeApiKey();
 }
 
 // Initialize

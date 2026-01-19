@@ -4,7 +4,10 @@ use financial_pipeline::{
     calculate_all, AlertCondition, BacktestConfig, BacktestEngine, Database, Fred, GoogleTrends,
     IndicatorAlert, IndicatorAlertCondition, IndicatorAlertType, PositionType, SignalEngine,
     Strategy, StrategyConditionType, YahooFinance,
+    VectorStore, MarketEvent, PricePattern,
+    ClaudeClient, FinancialContext, PriceContext as ClaudePriceContext,
 };
+use chrono::Utc;
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::State;
@@ -1659,6 +1662,245 @@ fn rename_watchlist(
     }
 }
 
+// ============================================================================
+// VECTOR DATABASE COMMANDS
+// ============================================================================
+
+/// Vector search result for frontend
+#[derive(Serialize)]
+struct VectorSearchResponse {
+    id: String,
+    content: String,
+    score: f64,
+    result_type: String,
+    symbol: Option<String>,
+    date: Option<String>,
+}
+
+/// Vector stats response
+#[derive(Serialize)]
+struct VectorStatsResponse {
+    events_count: usize,
+    patterns_count: usize,
+}
+
+/// Search the vector database for relevant market events and patterns
+#[tauri::command]
+fn vector_search(query: String, limit: usize) -> Result<Vec<VectorSearchResponse>, String> {
+    let store = VectorStore::new("../data/vectors.db").map_err(|e| e.to_string())?;
+
+    let results = store.search_all(&query, limit).map_err(|e| e.to_string())?;
+
+    Ok(results
+        .into_iter()
+        .map(|r| VectorSearchResponse {
+            id: r.id,
+            content: r.content,
+            score: r.score as f64,
+            result_type: r.result_type,
+            symbol: r.symbol,
+            date: r.date,
+        })
+        .collect())
+}
+
+/// Add a market event to the vector database
+#[tauri::command]
+fn add_market_event(
+    symbol: String,
+    event_type: String,
+    title: String,
+    content: String,
+    date: String,
+    sentiment: Option<f32>,
+) -> Result<CommandResult, String> {
+    let store = VectorStore::new("../data/vectors.db").map_err(|e| e.to_string())?;
+
+    let event = MarketEvent {
+        id: format!("{}-{}-{}", symbol, event_type, date),
+        symbol,
+        event_type,
+        title,
+        content,
+        date,
+        sentiment,
+        metadata: None,
+    };
+
+    store.add_market_event(&event).map_err(|e| e.to_string())?;
+
+    Ok(CommandResult {
+        success: true,
+        message: "Market event added to vector database".to_string(),
+    })
+}
+
+/// Add a price pattern to the vector database
+#[tauri::command]
+fn add_price_pattern(
+    symbol: String,
+    pattern_type: String,
+    start_date: String,
+    end_date: String,
+    price_change_percent: f32,
+    volume_change_percent: f32,
+    description: String,
+) -> Result<CommandResult, String> {
+    let store = VectorStore::new("../data/vectors.db").map_err(|e| e.to_string())?;
+
+    let pattern = PricePattern {
+        id: format!("{}-{}-{}", symbol, pattern_type, start_date),
+        symbol,
+        pattern_type,
+        start_date,
+        end_date,
+        price_change_percent,
+        volume_change_percent,
+        description,
+    };
+
+    store.add_price_pattern(&pattern).map_err(|e| e.to_string())?;
+
+    Ok(CommandResult {
+        success: true,
+        message: "Price pattern added to vector database".to_string(),
+    })
+}
+
+/// Get vector database statistics
+#[tauri::command]
+fn get_vector_stats() -> Result<VectorStatsResponse, String> {
+    let store = VectorStore::new("../data/vectors.db").map_err(|e| e.to_string())?;
+
+    let (events_count, patterns_count) = store.get_stats().map_err(|e| e.to_string())?;
+
+    Ok(VectorStatsResponse {
+        events_count,
+        patterns_count,
+    })
+}
+
+// ============================================================================
+// CLAUDE AI COMMANDS
+// ============================================================================
+
+/// Claude chat response for frontend
+#[derive(Serialize)]
+struct ClaudeChatResponse {
+    response: String,
+    model: String,
+    input_tokens: u32,
+    output_tokens: u32,
+    conversation_id: String,
+}
+
+/// Chat with Claude using financial context from the database
+#[tauri::command]
+fn claude_chat(
+    state: State<AppState>,
+    query: String,
+    api_key: String,
+) -> Result<ClaudeChatResponse, String> {
+    // Build financial context from database
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    // Get tracked symbols and their prices
+    let symbols = db.get_symbols_with_data().map_err(|e| e.to_string())?;
+
+    let mut price_contexts = Vec::new();
+    for symbol in &symbols {
+        if let Ok(prices) = db.get_prices(symbol) {
+            if prices.len() >= 2 {
+                let current = prices.last().unwrap();
+                let previous = &prices[prices.len() - 2];
+                let change_pct = if previous.close > 0.0 {
+                    ((current.close - previous.close) / previous.close) * 100.0
+                } else {
+                    0.0
+                };
+
+                price_contexts.push(ClaudePriceContext {
+                    symbol: symbol.clone(),
+                    price: current.close,
+                    change_percent: Some(change_pct),
+                    date: current.date.to_string(),
+                });
+            } else if let Some(price) = prices.last() {
+                price_contexts.push(ClaudePriceContext {
+                    symbol: symbol.clone(),
+                    price: price.close,
+                    change_percent: None,
+                    date: price.date.to_string(),
+                });
+            }
+        }
+    }
+
+    // Drop the db lock before making the API call
+    drop(db);
+
+    let context = FinancialContext {
+        symbols,
+        recent_prices: price_contexts,
+        query: query.clone(),
+    };
+
+    // Create Claude client and query
+    let client = ClaudeClient::with_api_key(api_key)
+        .map_err(|e| e.to_string())?;
+
+    let result = client
+        .query_with_context(&query, Some(&context), None)
+        .map_err(|e| e.to_string())?;
+
+    // Store the conversation in vector database for future reference
+    let store = VectorStore::new("../data/vectors.db").map_err(|e| e.to_string())?;
+
+    let event = MarketEvent {
+        id: format!("chat-{}", result.conversation_id),
+        symbol: "CHAT".to_string(),
+        event_type: "ai_analysis".to_string(),
+        title: query.chars().take(100).collect(),
+        content: format!("Q: {}\n\nA: {}", query, result.response),
+        date: Utc::now().format("%Y-%m-%d").to_string(),
+        sentiment: None,
+        metadata: Some(format!("model:{},tokens:{}", result.model, result.input_tokens + result.output_tokens)),
+    };
+
+    // Store but don't fail if it errors
+    let _ = store.add_market_event(&event);
+
+    Ok(ClaudeChatResponse {
+        response: result.response,
+        model: result.model,
+        input_tokens: result.input_tokens,
+        output_tokens: result.output_tokens,
+        conversation_id: result.conversation_id,
+    })
+}
+
+/// Simple Claude query without financial context
+#[tauri::command]
+fn claude_query(
+    query: String,
+    api_key: String,
+) -> Result<ClaudeChatResponse, String> {
+    let client = ClaudeClient::with_api_key(api_key)
+        .map_err(|e| e.to_string())?;
+
+    let result = client
+        .query(&query)
+        .map_err(|e| e.to_string())?;
+
+    Ok(ClaudeChatResponse {
+        response: result.response,
+        model: result.model,
+        input_tokens: result.input_tokens,
+        output_tokens: result.output_tokens,
+        conversation_id: result.conversation_id,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize database
@@ -1719,6 +1961,14 @@ pub fn run() {
             remove_symbol_from_watchlist,
             update_watchlist_description,
             rename_watchlist,
+            // Vector database commands
+            vector_search,
+            add_market_event,
+            add_price_pattern,
+            get_vector_stats,
+            // Claude AI commands
+            claude_chat,
+            claude_query,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

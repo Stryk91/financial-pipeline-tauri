@@ -573,3 +573,144 @@ button:disabled {
     background: #fbbf24;
     color: #1e293b;
 }
+
+/* ==========================================================================
+   AI Search Tab Styles
+   ========================================================================== */
+
+.ai-search-container {
+    padding: 0;
+}
+
+.ai-search-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.ai-search-header h4 {
+    margin: 0;
+    color: var(--primary);
+}
+
+.vector-stats {
+    display: flex;
+    gap: 16px;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.vector-stats strong {
+    color: var(--primary);
+}
+
+.ai-search-input {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+}
+
+.ai-search-input input {
+    flex: 1;
+    padding: 12px 16px;
+    font-size: 1rem;
+}
+
+.ai-search-input button {
+    padding: 12px 24px;
+    font-size: 1rem;
+}
+
+.ai-search-results {
+    min-height: 150px;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    padding: 16px;
+}
+
+.ai-result-item {
+    background: var(--bg-primary);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 12px;
+    border-left: 4px solid var(--primary);
+}
+
+.ai-result-item[data-type="market_event"] {
+    border-left-color: #3b82f6;
+}
+
+.ai-result-item[data-type="price_pattern"] {
+    border-left-color: #8b5cf6;
+}
+
+.ai-result-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.ai-result-type {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.ai-result-type.market_event {
+    background: #3b82f6;
+    color: white;
+}
+
+.ai-result-type.price_pattern {
+    background: #8b5cf6;
+    color: white;
+}
+
+.ai-result-score {
+    font-size: 0.8rem;
+    color: var(--success);
+    font-weight: 600;
+}
+
+.ai-result-symbol {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--primary);
+    background: var(--bg-secondary);
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.ai-result-content {
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    line-height: 1.5;
+}
+
+.ai-result-date {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 8px;
+}
+
+/* Textarea for content fields */
+.ai-search-container textarea {
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 0.9rem;
+    resize: vertical;
+}
+
+.ai-search-container textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+}

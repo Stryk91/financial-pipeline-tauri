@@ -1012,6 +1012,7 @@ dependencies = [
 name = "financial-pipeline-gui"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "financial_pipeline",
  "log",
  "serde",

@@ -35,7 +35,9 @@ pub mod models;
 pub mod backtest;
 pub mod signals;
 pub mod trends;
+pub mod vectors;
 pub mod yahoo;
+pub mod claude;
 
 // Re-exports for convenience
 pub use db::Database;
@@ -55,4 +57,6 @@ pub use models::{
 pub use backtest::{BacktestConfig, BacktestEngine};
 pub use signals::{SignalConfig, SignalEngine};
 pub use trends::{GoogleTrends, TrendData};
+pub use vectors::{VectorStore, MarketEvent, PricePattern, SearchResult as VectorSearchResult, ChatMessage, ChatResponse};
 pub use yahoo::YahooFinance;
+pub use claude::{ClaudeClient, ClaudeMessage, ChatResult, FinancialContext, PriceContext};

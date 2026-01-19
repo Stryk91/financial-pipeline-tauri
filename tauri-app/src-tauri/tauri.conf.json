@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.stryk.financial-pipeline",
   "build": {
-    "frontendDist": "../dist"
+    "frontendDist": "../dist",
+    "devUrl": "http://10.0.134.178:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "withGlobalTauri": true,

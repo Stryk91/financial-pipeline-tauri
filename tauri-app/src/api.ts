@@ -208,3 +208,74 @@ export async function updateWatchlistDescription(name: string, description: stri
 export async function renameWatchlist(oldName: string, newName: string): Promise<CommandResult> {
     return invoke('rename_watchlist', { oldName, newName });
 }
+
+// Vector Database / AI Search
+export interface VectorSearchResult {
+    id: string;
+    content: string;
+    score: number;
+    result_type: string;
+    symbol: string | null;
+    date: string | null;
+}
+
+export interface VectorStats {
+    events_count: number;
+    patterns_count: number;
+}
+
+export async function vectorSearch(query: string, limit: number = 10): Promise<VectorSearchResult[]> {
+    return invoke('vector_search', { query, limit });
+}
+
+export async function addMarketEvent(
+    symbol: string,
+    eventType: string,
+    title: string,
+    content: string,
+    date: string,
+    sentiment: number | null
+): Promise<CommandResult> {
+    return invoke('add_market_event', { symbol, eventType, title, content, date, sentiment });
+}
+
+export async function addPricePattern(
+    symbol: string,
+    patternType: string,
+    startDate: string,
+    endDate: string,
+    priceChangePercent: number,
+    volumeChangePercent: number,
+    description: string
+): Promise<CommandResult> {
+    return invoke('add_price_pattern', {
+        symbol,
+        patternType,
+        startDate,
+        endDate,
+        priceChangePercent,
+        volumeChangePercent,
+        description
+    });
+}
+
+export async function getVectorStats(): Promise<VectorStats> {
+    return invoke('get_vector_stats');
+}
+
+// Claude AI Chat
+export interface ClaudeChatResponse {
+    response: string;
+    model: string;
+    input_tokens: number;
+    output_tokens: number;
+    conversation_id: string;
+}
+
+export async function claudeChat(query: string, apiKey: string): Promise<ClaudeChatResponse> {
+    return invoke('claude_chat', { query, apiKey });
+}
+
+export async function claudeQuery(query: string, apiKey: string): Promise<ClaudeChatResponse> {
+    return invoke('claude_query', { query, apiKey });
+}
