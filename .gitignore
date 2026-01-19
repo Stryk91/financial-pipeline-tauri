@@ -84,3 +84,10 @@ qt-app/target
 .claude/
 /tmp/claude/
 *.output
+
+# Additional safety
+*.key
+*api_key*
+*secret*
+tauri-app/dist/
+data/vectors.db
