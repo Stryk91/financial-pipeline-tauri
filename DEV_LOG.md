@@ -141,12 +141,57 @@
 
 ---
 
+## [2026-01-21] AI Trader Guardrails & Circuit Breaker
+**Author:** KALIC
+**Files:** `src/ai_trader.rs`, `src/db.rs`, `src/models.rs`, `src/ollama.rs`, `tauri-app/src-tauri/src/lib.rs`
+**Summary:** Implemented autonomous trading safety system per DC spec
+
+**Trading Modes (TradingMode enum):**
+- `Aggressive` - 33% max position, 20 trades/day, no confluence required (STRYK override only)
+- `Normal` - 10% max position, 10 trades/day, confluence required (default)
+- `Conservative` - 5% max position, 5 trades/day, strict confluence (circuit breaker fallback)
+- `Paused` - No new trades, position management only
+
+**Circuit Breaker:**
+- -10% daily loss threshold → auto-switch to conservative
+- 5 consecutive losses → 1 hour trading pause
+- Auto-conservative on trigger (configurable)
+- All triggers logged to `circuit_breaker_events` table
+
+**TradeResult Enum (Audit Trail):**
+- `Executed { trade_id, symbol, action, quantity, price, value, timestamp }`
+- `Queued { reason, review_by, proposed_trade }`
+- `Rejected { reason, rule_triggered, proposed_trade }`
+
+**Override Escape Hatch:**
+- Time-limited elevated permissions for STRYK
+- `Override::timed(hours, max_pct, reason)` with auto-expiry
+- Audit logged with reason
+
+**Database:**
+- `trade_rejections` table - every rejected trade with reason + rule
+- `circuit_breaker_events` table - trigger history
+- Extended `ai_trader_config` with mode, CB settings, guardrails
+- Migration support for existing databases
+
+**Tauri Commands:**
+- `ai_trader_get_mode` / `ai_trader_switch_mode`
+- `ai_trader_get_circuit_breaker` / `ai_trader_update_circuit_breaker`
+- `ai_trader_get_rejections` / `ai_trader_get_circuit_breaker_events`
+
+**Git:** Merged to main via PR #2
+
+---
+
 ## Pending / TODO
 
 - [x] Add price display to news cards (symbol price at time of news)
 - [x] Integrate Finnhub `/news-sentiment` endpoint for bullish/bearish scores (used outcome-based instead)
 - [x] Paper trading backend (db, Tauri commands, TypeScript API)
+- [x] AI Trader guardrails & circuit breaker
 - [ ] Paper trading frontend UI (sidebar panel)
+- [ ] Guardrails mode switcher UI in AI Trader tab
+- [ ] Ollama tool calling integration
 - [ ] Vector learning hooks capturing KALIC tool executions
 
 ---
