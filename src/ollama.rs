@@ -539,7 +539,7 @@ mod tests {
     async fn test_client_creation() {
         let client = OllamaClient::new();
         assert_eq!(client.base_url, DEFAULT_OLLAMA_URL);
-        assert_eq!(client.default_model, MODEL_FAST);
+        assert_eq!(client.default_model, MODEL_BALANCED);  // Default is balanced model
 
         let custom = OllamaClient::with_url("http://custom:11434").with_model(MODEL_HEAVY);
         assert_eq!(custom.base_url, "http://custom:11434");
