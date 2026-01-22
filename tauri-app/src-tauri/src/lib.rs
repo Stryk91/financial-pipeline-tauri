@@ -10,6 +10,8 @@ use financial_pipeline::{
     PaperWallet, PaperPosition, PaperTrade, PaperTradeAction,
     AiTrader, AiTraderConfig, AiTradingSession, AiTradeDecision, AiPerformanceSnapshot,
     AiPredictionAccuracy, AiTraderStatus, BenchmarkComparison, CompoundingForecast,
+    // DC Trader types
+    DcWallet, DcPosition, DcTrade, PortfolioSnapshot, TeamConfig, ImportResult, CompetitionStats,
 };
 use financial_pipeline::ollama::{OllamaClient, SentimentResult, PatternExplanation};
 use chrono::Utc;
@@ -134,6 +136,28 @@ fn toggle_favorite(state: State<AppState>, symbol: String) -> Result<bool, Strin
 fn get_favorited_symbols(state: State<AppState>) -> Result<Vec<String>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.get_favorited_symbols().map_err(|e| e.to_string())
+}
+
+/// Favorite all DC position symbols for auto-refresh
+#[tauri::command]
+fn favorite_dc_positions(state: State<AppState>) -> Result<CommandResult, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let symbols = db.favorite_dc_positions().map_err(|e| e.to_string())?;
+    Ok(CommandResult {
+        success: true,
+        message: format!("Added {} DC symbols to auto-refresh: {}", symbols.len(), symbols.join(", ")),
+    })
+}
+
+/// Favorite all KALIC position symbols for auto-refresh
+#[tauri::command]
+fn favorite_paper_positions(state: State<AppState>) -> Result<CommandResult, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let symbols = db.favorite_paper_positions().map_err(|e| e.to_string())?;
+    Ok(CommandResult {
+        success: true,
+        message: format!("Added {} KALIC symbols to auto-refresh: {}", symbols.len(), symbols.join(", ")),
+    })
 }
 
 /// Fetch stock prices from Yahoo Finance
@@ -2474,6 +2498,427 @@ fn reset_paper_account(
 }
 
 // ============================================================================
+// DC TRADER COMMANDS (Separate from KALIC AI paper trading)
+// ============================================================================
+
+/// DC wallet balance response
+#[derive(Serialize)]
+struct DcWalletResponse {
+    cash: f64,
+    positions_value: f64,
+    total_equity: f64,
+    starting_capital: f64,
+    total_pnl: f64,
+    total_pnl_percent: f64,
+}
+
+/// DC position with current price and P&L
+#[derive(Serialize)]
+struct DcPositionResponse {
+    id: i64,
+    symbol: String,
+    quantity: f64,
+    entry_price: f64,
+    entry_date: String,
+    current_price: f64,
+    current_value: f64,
+    cost_basis: f64,
+    unrealized_pnl: f64,
+    unrealized_pnl_percent: f64,
+}
+
+/// DC trade response
+#[derive(Serialize)]
+struct DcTradeResponse {
+    id: i64,
+    symbol: String,
+    action: String,
+    quantity: f64,
+    price: f64,
+    pnl: Option<f64>,
+    timestamp: String,
+    notes: Option<String>,
+}
+
+/// Import result response
+#[derive(Serialize)]
+struct ImportResultResponse {
+    success_count: i32,
+    error_count: i32,
+    errors: Vec<String>,
+}
+
+/// Portfolio snapshot response
+#[derive(Serialize)]
+struct PortfolioSnapshotResponse {
+    id: i64,
+    team: String,
+    date: String,
+    total_value: f64,
+    cash: f64,
+    positions_value: f64,
+}
+
+/// Team config response
+#[derive(Serialize)]
+struct TeamConfigResponse {
+    id: i64,
+    name: String,
+    description: Option<String>,
+    kalic_starting_capital: f64,
+    dc_starting_capital: f64,
+    created_at: String,
+}
+
+/// Competition stats response
+#[derive(Serialize)]
+struct CompetitionStatsResponse {
+    kalic_total: f64,
+    kalic_cash: f64,
+    kalic_positions: f64,
+    kalic_pnl_pct: f64,
+    kalic_trades: i32,
+    dc_total: f64,
+    dc_cash: f64,
+    dc_positions: f64,
+    dc_pnl_pct: f64,
+    dc_trades: i32,
+    leader: String,
+    lead_amount: f64,
+}
+
+/// Get DC wallet balance and portfolio summary
+#[tauri::command]
+fn get_dc_balance(state: State<AppState>) -> Result<DcWalletResponse, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    let wallet = db.get_dc_wallet().map_err(|e| e.to_string())?;
+    let (cash, positions_value, total_equity) = db
+        .get_dc_portfolio_value()
+        .map_err(|e| e.to_string())?;
+
+    let total_pnl = total_equity - wallet.starting_capital;
+    let total_pnl_percent = if wallet.starting_capital > 0.0 {
+        (total_pnl / wallet.starting_capital) * 100.0
+    } else {
+        0.0
+    };
+
+    Ok(DcWalletResponse {
+        cash,
+        positions_value,
+        total_equity,
+        starting_capital: wallet.starting_capital,
+        total_pnl,
+        total_pnl_percent,
+    })
+}
+
+/// Get all DC positions with current values
+#[tauri::command]
+fn get_dc_positions(state: State<AppState>) -> Result<Vec<DcPositionResponse>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    let positions = db.get_dc_positions().map_err(|e| e.to_string())?;
+
+    let mut result = Vec::new();
+    for pos in positions {
+        let current_price = db
+            .get_latest_price(&pos.symbol)
+            .map_err(|e| e.to_string())?
+            .unwrap_or(pos.entry_price);
+
+        let cost_basis = pos.quantity * pos.entry_price;
+        let current_value = pos.quantity * current_price;
+        let unrealized_pnl = current_value - cost_basis;
+        let unrealized_pnl_percent = if cost_basis > 0.0 {
+            (unrealized_pnl / cost_basis) * 100.0
+        } else {
+            0.0
+        };
+
+        result.push(DcPositionResponse {
+            id: pos.id,
+            symbol: pos.symbol,
+            quantity: pos.quantity,
+            entry_price: pos.entry_price,
+            entry_date: pos.entry_date,
+            current_price,
+            current_value,
+            cost_basis,
+            unrealized_pnl,
+            unrealized_pnl_percent,
+        });
+    }
+
+    Ok(result)
+}
+
+/// Execute a DC trade
+#[tauri::command]
+fn execute_dc_trade(
+    state: State<AppState>,
+    symbol: String,
+    action: String,
+    quantity: f64,
+    price: Option<f64>,
+    notes: Option<String>,
+) -> Result<DcTradeResponse, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let symbol = symbol.to_uppercase();
+
+    // Get current price if not provided
+    let trade_price = match price {
+        Some(p) => p,
+        None => db
+            .get_latest_price(&symbol)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("No price data for {}. Fetch prices first or specify price.", symbol))?,
+    };
+
+    let trade = db
+        .execute_dc_trade(
+            &symbol,
+            &action,
+            quantity,
+            trade_price,
+            notes.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+
+    println!(
+        "[OK] DC trade: {} {} {} @ ${:.2}",
+        trade.action,
+        trade.quantity,
+        trade.symbol,
+        trade.price
+    );
+
+    Ok(DcTradeResponse {
+        id: trade.id,
+        symbol: trade.symbol,
+        action: trade.action,
+        quantity: trade.quantity,
+        price: trade.price,
+        pnl: trade.pnl,
+        timestamp: trade.timestamp,
+        notes: trade.notes,
+    })
+}
+
+/// Get DC trade history
+#[tauri::command]
+fn get_dc_trades(
+    state: State<AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<DcTradeResponse>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    let trades = db
+        .get_dc_trades(limit.unwrap_or(100))
+        .map_err(|e| e.to_string())?;
+
+    Ok(trades
+        .into_iter()
+        .map(|t| DcTradeResponse {
+            id: t.id,
+            symbol: t.symbol,
+            action: t.action,
+            quantity: t.quantity,
+            price: t.price,
+            pnl: t.pnl,
+            timestamp: t.timestamp,
+            notes: t.notes,
+        })
+        .collect())
+}
+
+/// Reset DC trading account
+#[tauri::command]
+fn reset_dc_account(
+    state: State<AppState>,
+    starting_cash: Option<f64>,
+) -> Result<CommandResult, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    let cash = starting_cash.unwrap_or(1000000.0);
+    db.reset_dc_account(cash).map_err(|e| e.to_string())?;
+
+    Ok(CommandResult {
+        success: true,
+        message: format!("DC trading account reset with ${:.2}", cash),
+    })
+}
+
+/// Import DC trades from CSV
+#[tauri::command]
+fn import_dc_trades_csv(
+    state: State<AppState>,
+    #[allow(non_snake_case)]
+    csvContent: String,
+) -> Result<ImportResultResponse, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    let result = db.import_dc_trades_csv(&csvContent).map_err(|e| e.to_string())?;
+
+    Ok(ImportResultResponse {
+        success_count: result.success_count,
+        error_count: result.error_count,
+        errors: result.errors,
+    })
+}
+
+/// Import DC trades from JSON
+#[tauri::command]
+fn import_dc_trades_json(
+    state: State<AppState>,
+    #[allow(non_snake_case)]
+    jsonContent: String,
+) -> Result<ImportResultResponse, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    let result = db.import_dc_trades_json(&jsonContent).map_err(|e| e.to_string())?;
+
+    Ok(ImportResultResponse {
+        success_count: result.success_count,
+        error_count: result.error_count,
+        errors: result.errors,
+    })
+}
+
+/// Lookup current price for a symbol
+#[tauri::command]
+fn lookup_current_price(
+    state: State<AppState>,
+    symbol: String,
+) -> Result<f64, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let symbol = symbol.to_uppercase();
+
+    db.get_latest_price(&symbol)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("No price data for {}", symbol))
+}
+
+/// Record portfolio snapshot for a team
+#[tauri::command]
+fn record_portfolio_snapshot(
+    state: State<AppState>,
+    team: String,
+) -> Result<CommandResult, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    db.record_portfolio_snapshot(&team).map_err(|e| e.to_string())?;
+
+    Ok(CommandResult {
+        success: true,
+        message: format!("Recorded snapshot for {}", team),
+    })
+}
+
+/// Get portfolio snapshots for charting
+#[tauri::command]
+fn get_portfolio_snapshots(
+    state: State<AppState>,
+    team: Option<String>,
+    days: Option<i32>,
+) -> Result<Vec<PortfolioSnapshotResponse>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    let snapshots = db
+        .get_portfolio_snapshots(team.as_deref(), days.unwrap_or(30))
+        .map_err(|e| e.to_string())?;
+
+    Ok(snapshots
+        .into_iter()
+        .map(|s| PortfolioSnapshotResponse {
+            id: s.id,
+            team: s.team,
+            date: s.date,
+            total_value: s.total_value,
+            cash: s.cash,
+            positions_value: s.positions_value,
+        })
+        .collect())
+}
+
+/// Save team configuration
+#[tauri::command]
+fn save_team_config(
+    state: State<AppState>,
+    name: String,
+    description: Option<String>,
+) -> Result<i64, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    db.save_team_config(&name, description.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+/// Load team configuration
+#[tauri::command]
+fn load_team_config(
+    state: State<AppState>,
+    name: String,
+) -> Result<TeamConfigResponse, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    let config = db.load_team_config(&name).map_err(|e| e.to_string())?;
+
+    Ok(TeamConfigResponse {
+        id: config.id,
+        name: config.name,
+        description: config.description,
+        kalic_starting_capital: config.kalic_starting_capital,
+        dc_starting_capital: config.dc_starting_capital,
+        created_at: config.created_at,
+    })
+}
+
+/// List all team configurations
+#[tauri::command]
+fn list_team_configs(state: State<AppState>) -> Result<Vec<TeamConfigResponse>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    let configs = db.list_team_configs().map_err(|e| e.to_string())?;
+
+    Ok(configs
+        .into_iter()
+        .map(|c| TeamConfigResponse {
+            id: c.id,
+            name: c.name,
+            description: c.description,
+            kalic_starting_capital: c.kalic_starting_capital,
+            dc_starting_capital: c.dc_starting_capital,
+            created_at: c.created_at,
+        })
+        .collect())
+}
+
+/// Get competition stats
+#[tauri::command]
+fn get_competition_stats(state: State<AppState>) -> Result<CompetitionStatsResponse, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    let stats = db.get_competition_stats().map_err(|e| e.to_string())?;
+
+    Ok(CompetitionStatsResponse {
+        kalic_total: stats.kalic_total,
+        kalic_cash: stats.kalic_cash,
+        kalic_positions: stats.kalic_positions,
+        kalic_pnl_pct: stats.kalic_pnl_pct,
+        kalic_trades: stats.kalic_trades,
+        dc_total: stats.dc_total,
+        dc_cash: stats.dc_cash,
+        dc_positions: stats.dc_positions,
+        dc_pnl_pct: stats.dc_pnl_pct,
+        dc_trades: stats.dc_trades,
+        leader: stats.leader,
+        lead_amount: stats.lead_amount,
+    })
+}
+
+// ============================================================================
 // AI TRADER COMMANDS
 // ============================================================================
 
@@ -3097,6 +3542,8 @@ pub fn run() {
             get_symbols,
             toggle_favorite,
             get_favorited_symbols,
+            favorite_dc_positions,
+            favorite_paper_positions,
             fetch_prices,
             fetch_fred,
             get_macro_data,
@@ -3171,6 +3618,21 @@ pub fn run() {
             execute_paper_trade,
             get_paper_trades,
             reset_paper_account,
+            // DC trader commands
+            get_dc_balance,
+            get_dc_positions,
+            execute_dc_trade,
+            get_dc_trades,
+            reset_dc_account,
+            import_dc_trades_csv,
+            import_dc_trades_json,
+            lookup_current_price,
+            record_portfolio_snapshot,
+            get_portfolio_snapshots,
+            save_team_config,
+            load_team_config,
+            list_team_configs,
+            get_competition_stats,
             // AI trader commands
             ai_trader_get_status,
             ai_trader_get_config,

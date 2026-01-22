@@ -89,6 +89,7 @@
                         <button class="tab" data-tab="macro">Macro Data</button>
                         <button class="tab" data-tab="ai-search">AI Search</button>
                         <button class="tab" data-tab="ai-trader">AI Trader</button>
+                        <button class="tab" data-tab="dc-trader">DC Trader</button>
                         <button class="tab" data-tab="log">Log</button>
                     </div>
 
@@ -585,6 +586,173 @@
                                     <div class="ai-mini-stat">
                                         <span class="label">Total Trades</span>
                                         <span class="value" id="ai-trades-count">0</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- DC Trader Tab -->
+                    <div id="dc-trader-tab" class="tab-content" style="display: none;">
+                        <div class="ai-trader-container">
+                            <!-- Competition Leaderboard -->
+                            <div class="ai-status-panel" style="margin-bottom: 16px;">
+                                <h4 style="margin: 0 0 12px 0; color: var(--text-secondary);">Competition Leaderboard</h4>
+                                <div class="ai-status-row" style="grid-template-columns: 1fr auto 1fr;">
+                                    <div class="ai-stat-box" style="text-align: center;">
+                                        <span class="ai-stat-label">KALIC (AI)</span>
+                                        <span class="ai-stat-value" id="dc-kalic-total">$1,000,000</span>
+                                        <span class="ai-stat-change" id="dc-kalic-pnl">+0.00%</span>
+                                        <span class="ai-stat-label" id="dc-kalic-trades">0 trades</span>
+                                    </div>
+                                    <div style="display: flex; align-items: center; padding: 0 24px; color: var(--text-secondary); font-size: 24px;">
+                                        vs
+                                    </div>
+                                    <div class="ai-stat-box" style="text-align: center;">
+                                        <span class="ai-stat-label">DC</span>
+                                        <span class="ai-stat-value" id="dc-dc-total">$1,000,000</span>
+                                        <span class="ai-stat-change" id="dc-dc-pnl">+0.00%</span>
+                                        <span class="ai-stat-label" id="dc-dc-trades">0 trades</span>
+                                    </div>
+                                </div>
+                                <div style="text-align: center; margin-top: 12px; color: var(--accent-color);">
+                                    <span id="dc-leader-text">TIE</span>
+                                </div>
+                            </div>
+
+                            <!-- Status Panel -->
+                            <div class="ai-status-panel">
+                                <div class="ai-status-row">
+                                    <div class="ai-stat-box">
+                                        <span class="ai-stat-label">DC Portfolio Value</span>
+                                        <span class="ai-stat-value" id="dc-portfolio-value">$1,000,000.00</span>
+                                        <span class="ai-stat-change" id="dc-portfolio-change">+0.00%</span>
+                                    </div>
+                                    <div class="ai-stat-box">
+                                        <span class="ai-stat-label">Cash</span>
+                                        <span class="ai-stat-value" id="dc-cash">$1,000,000.00</span>
+                                    </div>
+                                    <div class="ai-stat-box">
+                                        <span class="ai-stat-label">Positions Value</span>
+                                        <span class="ai-stat-value" id="dc-positions-value">$0.00</span>
+                                    </div>
+                                    <div class="ai-stat-box">
+                                        <span class="ai-stat-label">Trades Today</span>
+                                        <span class="ai-stat-value" id="dc-trades-today">0</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Execute Trade Form -->
+                            <div class="ai-section" style="margin-top: 16px;">
+                                <h4>Execute Trade</h4>
+                                <div class="fetch-form">
+                                    <div class="two-column">
+                                        <div>
+                                            <div class="input-group">
+                                                <label for="dc-symbol">Symbol</label>
+                                                <div style="display: flex; gap: 8px;">
+                                                    <input type="text" id="dc-symbol" placeholder="OKLO" style="flex: 1;" />
+                                                    <button id="dc-lookup-price-btn" class="btn-secondary" style="white-space: nowrap;">Lookup Price</button>
+                                                </div>
+                                            </div>
+                                            <div class="input-group" style="margin-top: 8px;">
+                                                <label>Action</label>
+                                                <div style="display: flex; gap: 16px;">
+                                                    <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                                        <input type="radio" name="dc-action" value="BUY" checked /> BUY
+                                                    </label>
+                                                    <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                                        <input type="radio" name="dc-action" value="SELL" /> SELL
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div class="input-group">
+                                                <label for="dc-quantity">Quantity</label>
+                                                <input type="number" id="dc-quantity" placeholder="100" min="1" />
+                                            </div>
+                                            <div class="input-group" style="margin-top: 8px;">
+                                                <label for="dc-price">Price (optional - auto-fetches if blank)</label>
+                                                <input type="number" id="dc-price" placeholder="Auto" step="0.01" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="input-group" style="margin-top: 8px;">
+                                        <label for="dc-notes">Notes (optional)</label>
+                                        <input type="text" id="dc-notes" placeholder="High conviction play..." />
+                                    </div>
+                                    <div style="display: flex; gap: 8px; margin-top: 12px;">
+                                        <button id="dc-execute-trade-btn" class="btn-primary">Execute Trade</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Batch Import -->
+                            <div class="ai-section" style="margin-top: 16px;">
+                                <h4>Batch Import</h4>
+                                <div class="fetch-form">
+                                    <div class="input-group">
+                                        <label for="dc-import-content">Paste CSV or JSON</label>
+                                        <textarea id="dc-import-content" rows="4" placeholder='CSV: symbol,action,quantity,price,notes&#10;OKLO,BUY,100,25.50,"High conviction"&#10;&#10;JSON: [{"symbol":"OKLO","action":"BUY","quantity":100,"price":25.50}]'></textarea>
+                                    </div>
+                                    <div style="display: flex; gap: 8px; margin-top: 8px;">
+                                        <button id="dc-import-csv-btn" class="btn-secondary">Import as CSV</button>
+                                        <button id="dc-import-json-btn" class="btn-secondary">Import as JSON</button>
+                                    </div>
+                                    <div id="dc-import-result" style="margin-top: 8px; color: var(--text-secondary);"></div>
+                                </div>
+                            </div>
+
+                            <!-- Two Column: Positions and Trades -->
+                            <div class="two-column" style="margin-top: 16px;">
+                                <!-- Open Positions -->
+                                <div class="ai-section">
+                                    <h4>Open Positions</h4>
+                                    <div id="dc-positions-list" class="ai-decision-log" style="max-height: 300px;">
+                                        <div class="empty-state">No positions. Execute a trade to get started.</div>
+                                    </div>
+                                </div>
+
+                                <!-- Trade History -->
+                                <div class="ai-section">
+                                    <h4>Trade History</h4>
+                                    <div id="dc-trades-list" class="ai-decision-log" style="max-height: 300px;">
+                                        <div class="empty-state">No trades yet.</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Team Config -->
+                            <div class="ai-section" style="margin-top: 16px;">
+                                <h4>Team Configuration</h4>
+                                <div class="fetch-form">
+                                    <div class="two-column">
+                                        <div>
+                                            <div class="input-group">
+                                                <label for="dc-config-name">Config Name</label>
+                                                <input type="text" id="dc-config-name" placeholder="January Competition" />
+                                            </div>
+                                            <div class="input-group" style="margin-top: 8px;">
+                                                <label for="dc-config-desc">Description (optional)</label>
+                                                <input type="text" id="dc-config-desc" placeholder="Q1 2026 competition" />
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-start;">
+                                                <button id="dc-save-config-btn" class="btn-primary">Save Config</button>
+                                                <button id="dc-sync-prices-btn" class="btn-primary">Sync Prices</button>
+                                                <button id="dc-reset-account-btn" class="btn-secondary">Reset DC to $1M</button>
+                                                <button id="dc-snapshot-btn" class="btn-secondary">Record Snapshot</button>
+                                            </div>
+                                            <div class="input-group" style="margin-top: 12px;">
+                                                <label for="dc-config-select">Load Config</label>
+                                                <select id="dc-config-select" style="width: 100%;">
+                                                    <option value="">-- Select Config --</option>
+                                                </select>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>

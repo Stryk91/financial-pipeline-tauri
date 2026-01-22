@@ -13,6 +13,8 @@ use crate::models::{
     PaperWallet, PaperPosition, PaperTrade, PaperTradeAction,
     // AI Trading types
     AiTraderConfig, AiTradingSession, AiTradeDecision, AiPerformanceSnapshot, AiPredictionAccuracy,
+    // DC Trader types
+    DcWallet, DcPosition, DcTrade, PortfolioSnapshot, TeamConfig, ImportResult, CompetitionStats,
 };
 use crate::trends::TrendData;
 
@@ -447,6 +449,37 @@ impl Database {
         let symbols = stmt
             .query_map([], |row| row.get(0))?
             .collect::<SqliteResult<Vec<_>>>()?;
+        Ok(symbols)
+    }
+
+    /// Set a symbol as favorited (for auto-refresh)
+    pub fn set_symbol_favorited(&self, symbol: &str, favorited: bool) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO symbols (symbol, favorited) VALUES (?1, ?2)",
+            params![symbol, favorited as i32],
+        )?;
+        Ok(())
+    }
+
+    /// Favorite all DC position symbols for auto-refresh
+    pub fn favorite_dc_positions(&self) -> Result<Vec<String>> {
+        let positions = self.get_dc_positions()?;
+        let mut symbols = Vec::new();
+        for pos in positions {
+            self.set_symbol_favorited(&pos.symbol, true)?;
+            symbols.push(pos.symbol);
+        }
+        Ok(symbols)
+    }
+
+    /// Favorite all paper (KALIC) position symbols for auto-refresh
+    pub fn favorite_paper_positions(&self) -> Result<Vec<String>> {
+        let positions = self.get_paper_positions()?;
+        let mut symbols = Vec::new();
+        for pos in positions {
+            self.set_symbol_favorited(&pos.symbol, true)?;
+            symbols.push(pos.symbol);
+        }
         Ok(symbols)
     }
 
@@ -2072,6 +2105,644 @@ impl Database {
     }
 
     // ========================================================================
+    // DC Trader Methods (Separate from KALIC AI paper trading)
+    // ========================================================================
+
+    /// Initialize DC wallet if not exists
+    pub fn init_dc_wallet(&self) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO dc_wallet (id, cash, starting_capital) VALUES (1, 1000000.0, 1000000.0)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Get DC wallet balance
+    pub fn get_dc_wallet(&self) -> Result<DcWallet> {
+        // Ensure wallet exists
+        self.init_dc_wallet()?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, cash, starting_capital, created_at, updated_at FROM dc_wallet WHERE id = 1",
+        )?;
+
+        let wallet = stmt.query_row([], |row| {
+            Ok(DcWallet {
+                id: row.get(0)?,
+                cash: row.get(1)?,
+                starting_capital: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        })?;
+
+        Ok(wallet)
+    }
+
+    /// Update DC wallet cash balance
+    fn update_dc_cash(&self, new_cash: f64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE dc_wallet SET cash = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+            params![new_cash],
+        )?;
+        Ok(())
+    }
+
+    /// Get all DC positions
+    pub fn get_dc_positions(&self) -> Result<Vec<DcPosition>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, symbol, quantity, entry_price, entry_date
+            FROM dc_positions
+            ORDER BY entry_date DESC
+            "#,
+        )?;
+
+        let positions = stmt
+            .query_map([], |row| {
+                Ok(DcPosition {
+                    id: row.get(0)?,
+                    symbol: row.get(1)?,
+                    quantity: row.get(2)?,
+                    entry_price: row.get(3)?,
+                    entry_date: row.get(4)?,
+                })
+            })?
+            .collect::<SqliteResult<Vec<_>>>()?;
+
+        Ok(positions)
+    }
+
+    /// Get DC position for a specific symbol
+    pub fn get_dc_position(&self, symbol: &str) -> Result<Option<DcPosition>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, symbol, quantity, entry_price, entry_date
+            FROM dc_positions
+            WHERE symbol = ?1
+            "#,
+        )?;
+
+        let result = stmt.query_row(params![symbol], |row| {
+            Ok(DcPosition {
+                id: row.get(0)?,
+                symbol: row.get(1)?,
+                quantity: row.get(2)?,
+                entry_price: row.get(3)?,
+                entry_date: row.get(4)?,
+            })
+        });
+
+        match result {
+            Ok(pos) => Ok(Some(pos)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Execute a DC trade (BUY or SELL)
+    pub fn execute_dc_trade(
+        &self,
+        symbol: &str,
+        action: &str,
+        quantity: f64,
+        price: f64,
+        notes: Option<&str>,
+    ) -> Result<DcTrade> {
+        let wallet = self.get_dc_wallet()?;
+        let cost = quantity * price;
+        let action_upper = action.to_uppercase();
+
+        match action_upper.as_str() {
+            "BUY" => {
+                // Validate sufficient cash
+                if wallet.cash < cost {
+                    return Err(crate::error::PipelineError::ApiError(format!(
+                        "Insufficient cash: have ${:.2}, need ${:.2}",
+                        wallet.cash, cost
+                    )));
+                }
+
+                // Deduct cash
+                self.update_dc_cash(wallet.cash - cost)?;
+
+                // Add or update position
+                let existing = self.get_dc_position(symbol)?;
+                if let Some(pos) = existing {
+                    // Average down
+                    let total_qty = pos.quantity + quantity;
+                    let avg_price = (pos.quantity * pos.entry_price + quantity * price) / total_qty;
+                    self.conn.execute(
+                        "UPDATE dc_positions SET quantity = ?1, entry_price = ?2 WHERE id = ?3",
+                        params![total_qty, avg_price, pos.id],
+                    )?;
+                } else {
+                    // New position
+                    self.conn.execute(
+                        r#"
+                        INSERT INTO dc_positions (symbol, quantity, entry_price)
+                        VALUES (?1, ?2, ?3)
+                        "#,
+                        params![symbol, quantity, price],
+                    )?;
+                }
+
+                // Record trade
+                self.conn.execute(
+                    r#"
+                    INSERT INTO dc_trades (symbol, action, quantity, price, notes)
+                    VALUES (?1, ?2, ?3, ?4, ?5)
+                    "#,
+                    params![symbol, "BUY", quantity, price, notes],
+                )?;
+            }
+            "SELL" => {
+                // Validate sufficient shares
+                let position = self.get_dc_position(symbol)?;
+                let pos = position.ok_or_else(|| {
+                    crate::error::PipelineError::ApiError(format!(
+                        "No position in {} to sell",
+                        symbol
+                    ))
+                })?;
+
+                if pos.quantity < quantity {
+                    return Err(crate::error::PipelineError::ApiError(format!(
+                        "Insufficient shares: have {}, trying to sell {}",
+                        pos.quantity, quantity
+                    )));
+                }
+
+                // Calculate P&L
+                let pnl = (price - pos.entry_price) * quantity;
+
+                // Add proceeds to cash
+                self.update_dc_cash(wallet.cash + cost)?;
+
+                // Update or delete position
+                let remaining = pos.quantity - quantity;
+                if remaining <= 0.0001 {
+                    self.conn.execute(
+                        "DELETE FROM dc_positions WHERE id = ?1",
+                        params![pos.id],
+                    )?;
+                } else {
+                    self.conn.execute(
+                        "UPDATE dc_positions SET quantity = ?1 WHERE id = ?2",
+                        params![remaining, pos.id],
+                    )?;
+                }
+
+                // Record trade with P&L
+                self.conn.execute(
+                    r#"
+                    INSERT INTO dc_trades (symbol, action, quantity, price, pnl, notes)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    "#,
+                    params![symbol, "SELL", quantity, price, pnl, notes],
+                )?;
+            }
+            _ => {
+                return Err(crate::error::PipelineError::ApiError(format!(
+                    "Invalid action: {}. Must be BUY or SELL",
+                    action
+                )));
+            }
+        }
+
+        // Return the trade we just recorded
+        let trade_id = self.conn.last_insert_rowid();
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, symbol, action, quantity, price, pnl, timestamp, notes
+            FROM dc_trades WHERE id = ?1
+            "#,
+        )?;
+
+        let trade = stmt.query_row(params![trade_id], |row| {
+            Ok(DcTrade {
+                id: row.get(0)?,
+                symbol: row.get(1)?,
+                action: row.get(2)?,
+                quantity: row.get(3)?,
+                price: row.get(4)?,
+                pnl: row.get(5)?,
+                timestamp: row.get(6)?,
+                notes: row.get(7)?,
+            })
+        })?;
+
+        Ok(trade)
+    }
+
+    /// Get DC trade history
+    pub fn get_dc_trades(&self, limit: usize) -> Result<Vec<DcTrade>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, symbol, action, quantity, price, pnl, timestamp, notes
+            FROM dc_trades
+            ORDER BY timestamp DESC
+            LIMIT ?1
+            "#,
+        )?;
+
+        let trades = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok(DcTrade {
+                    id: row.get(0)?,
+                    symbol: row.get(1)?,
+                    action: row.get(2)?,
+                    quantity: row.get(3)?,
+                    price: row.get(4)?,
+                    pnl: row.get(5)?,
+                    timestamp: row.get(6)?,
+                    notes: row.get(7)?,
+                })
+            })?
+            .collect::<SqliteResult<Vec<_>>>()?;
+
+        Ok(trades)
+    }
+
+    /// Reset DC trading account
+    pub fn reset_dc_account(&self, starting_cash: f64) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM dc_positions", [])?;
+        tx.execute("DELETE FROM dc_trades", [])?;
+        tx.execute(
+            "UPDATE dc_wallet SET cash = ?1, starting_capital = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+            params![starting_cash],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Calculate DC portfolio value
+    pub fn get_dc_portfolio_value(&self) -> Result<(f64, f64, f64)> {
+        let wallet = self.get_dc_wallet()?;
+        let positions = self.get_dc_positions()?;
+
+        let mut positions_value = 0.0;
+        for pos in positions {
+            let db_price = self.get_latest_price(&pos.symbol)?;
+            let current_price = db_price.unwrap_or(pos.entry_price);
+            let pos_value = pos.quantity * current_price;
+
+            // Debug: print price lookup results
+            if db_price.is_none() {
+                println!("[DC] No price found for {}, using entry ${:.2}", pos.symbol, pos.entry_price);
+            } else {
+                println!("[DC] {} price: ${:.2} (entry: ${:.2})", pos.symbol, current_price, pos.entry_price);
+            }
+
+            positions_value += pos_value;
+        }
+
+        let total_equity = wallet.cash + positions_value;
+        println!("[DC] Portfolio: cash=${:.2}, positions=${:.2}, total=${:.2}", wallet.cash, positions_value, total_equity);
+        Ok((wallet.cash, positions_value, total_equity))
+    }
+
+    /// Import multiple DC trades from JSON
+    pub fn import_dc_trades_json(&self, trades_json: &str) -> Result<ImportResult> {
+        let trades: Vec<serde_json::Value> = serde_json::from_str(trades_json)
+            .map_err(|e| crate::error::PipelineError::ApiError(format!("Invalid JSON: {}", e)))?;
+
+        let mut success_count = 0;
+        let mut error_count = 0;
+        let mut errors: Vec<String> = Vec::new();
+
+        for (i, trade) in trades.iter().enumerate() {
+            let symbol = trade["symbol"].as_str().unwrap_or("").to_uppercase();
+            let action = trade["action"].as_str().unwrap_or("BUY").to_uppercase();
+            let quantity = trade["quantity"].as_f64().unwrap_or(0.0);
+            let price = trade["price"].as_f64();
+            let notes = trade["notes"].as_str();
+
+            if symbol.is_empty() || quantity <= 0.0 {
+                error_count += 1;
+                errors.push(format!("Row {}: Invalid symbol or quantity", i + 1));
+                continue;
+            }
+
+            // If price not provided, try to fetch current price
+            let trade_price = match price {
+                Some(p) => p,
+                None => {
+                    match self.get_latest_price(&symbol)? {
+                        Some(p) => p,
+                        None => {
+                            error_count += 1;
+                            errors.push(format!("Row {}: No price provided and could not fetch for {}", i + 1, symbol));
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            match self.execute_dc_trade(&symbol, &action, quantity, trade_price, notes) {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    error_count += 1;
+                    errors.push(format!("Row {}: {}", i + 1, e));
+                }
+            }
+        }
+
+        Ok(ImportResult {
+            success_count,
+            error_count,
+            errors,
+        })
+    }
+
+    /// Import multiple DC trades from CSV
+    pub fn import_dc_trades_csv(&self, csv_content: &str) -> Result<ImportResult> {
+        let mut success_count = 0;
+        let mut error_count = 0;
+        let mut errors: Vec<String> = Vec::new();
+
+        let lines: Vec<&str> = csv_content.lines().collect();
+        if lines.is_empty() {
+            return Ok(ImportResult { success_count: 0, error_count: 0, errors: vec![] });
+        }
+
+        // Skip header if present
+        let start_idx = if lines[0].to_lowercase().contains("symbol") { 1 } else { 0 };
+
+        // First pass: calculate total BUY value needed
+        let mut total_buy_value = 0.0;
+        let mut parsed_trades: Vec<(String, String, f64, f64, Option<String>)> = Vec::new();
+
+        for (i, line) in lines.iter().skip(start_idx).enumerate() {
+            let parts: Vec<&str> = line.split(',').map(|s| s.trim().trim_matches('"')).collect();
+            if parts.len() < 3 {
+                error_count += 1;
+                errors.push(format!("Row {}: Not enough columns", i + 1));
+                continue;
+            }
+
+            let symbol = parts[0].to_uppercase();
+            let action = parts[1].to_uppercase();
+            let quantity: f64 = match parts[2].parse() {
+                Ok(q) => q,
+                Err(_) => {
+                    error_count += 1;
+                    errors.push(format!("Row {}: Invalid quantity", i + 1));
+                    continue;
+                }
+            };
+
+            let price: Option<f64> = if parts.len() > 3 && !parts[3].is_empty() {
+                parts[3].parse().ok()
+            } else {
+                None
+            };
+
+            let notes: Option<String> = if parts.len() > 4 && !parts[4].is_empty() {
+                Some(parts[4].to_string())
+            } else {
+                None
+            };
+
+            // Get trade price
+            let trade_price = match price {
+                Some(p) => p,
+                None => {
+                    match self.get_latest_price(&symbol)? {
+                        Some(p) => p,
+                        None => {
+                            error_count += 1;
+                            errors.push(format!("Row {}: No price provided and could not fetch for {}", i + 1, symbol));
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            if action == "BUY" {
+                total_buy_value += quantity * trade_price;
+            }
+            parsed_trades.push((symbol, action, quantity, trade_price, notes));
+        }
+
+        // Auto-adjust starting capital if needed (add 5% buffer)
+        let wallet = self.get_dc_wallet()?;
+        let needed_capital = total_buy_value * 1.05;
+        if needed_capital > wallet.cash {
+            self.conn.execute(
+                "UPDATE dc_wallet SET cash = ?1, starting_capital = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                params![needed_capital],
+            )?;
+        }
+
+        // Second pass: execute trades
+        for (symbol, action, quantity, trade_price, notes) in parsed_trades {
+            match self.execute_dc_trade(&symbol, &action, quantity, trade_price, notes.as_deref()) {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    error_count += 1;
+                    errors.push(format!("{}: {}", symbol, e));
+                }
+            }
+        }
+
+        Ok(ImportResult {
+            success_count,
+            error_count,
+            errors,
+        })
+    }
+
+    /// Record a portfolio snapshot for charting
+    pub fn record_portfolio_snapshot(&self, team: &str) -> Result<()> {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+        let (cash, positions_value, total_value) = match team {
+            "KALIC" => self.get_paper_portfolio_value()?,
+            "DC" => self.get_dc_portfolio_value()?,
+            _ => return Err(crate::error::PipelineError::ApiError(format!("Invalid team: {}", team))),
+        };
+
+        self.conn.execute(
+            r#"
+            INSERT OR REPLACE INTO portfolio_snapshots (team, date, total_value, cash, positions_value)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![team, today, total_value, cash, positions_value],
+        )?;
+
+        Ok(())
+    }
+
+    /// Get portfolio snapshots for charting
+    pub fn get_portfolio_snapshots(&self, team: Option<&str>, days: i32) -> Result<Vec<PortfolioSnapshot>> {
+        let sql = match team {
+            Some(_) => r#"
+                SELECT id, team, date, total_value, cash, positions_value
+                FROM portfolio_snapshots
+                WHERE team = ?1 AND date >= date('now', '-' || ?2 || ' days')
+                ORDER BY date ASC
+            "#,
+            None => r#"
+                SELECT id, team, date, total_value, cash, positions_value
+                FROM portfolio_snapshots
+                WHERE date >= date('now', '-' || ?1 || ' days')
+                ORDER BY team, date ASC
+            "#,
+        };
+
+        let mut stmt = self.conn.prepare(sql)?;
+
+        let snapshots: Vec<PortfolioSnapshot> = match team {
+            Some(t) => {
+                stmt.query_map(params![t, days], |row| {
+                    Ok(PortfolioSnapshot {
+                        id: row.get(0)?,
+                        team: row.get(1)?,
+                        date: row.get(2)?,
+                        total_value: row.get(3)?,
+                        cash: row.get(4)?,
+                        positions_value: row.get(5)?,
+                    })
+                })?
+                .collect::<SqliteResult<Vec<_>>>()?
+            }
+            None => {
+                stmt.query_map(params![days], |row| {
+                    Ok(PortfolioSnapshot {
+                        id: row.get(0)?,
+                        team: row.get(1)?,
+                        date: row.get(2)?,
+                        total_value: row.get(3)?,
+                        cash: row.get(4)?,
+                        positions_value: row.get(5)?,
+                    })
+                })?
+                .collect::<SqliteResult<Vec<_>>>()?
+            }
+        };
+
+        Ok(snapshots)
+    }
+
+    /// Save a team configuration
+    pub fn save_team_config(&self, name: &str, description: Option<&str>) -> Result<i64> {
+        let kalic_wallet = self.get_paper_wallet()?;
+        let dc_wallet = self.get_dc_wallet()?;
+
+        self.conn.execute(
+            r#"
+            INSERT OR REPLACE INTO trading_teams (name, description, kalic_starting_capital, dc_starting_capital)
+            VALUES (?1, ?2, ?3, ?4)
+            "#,
+            params![name, description, kalic_wallet.cash, dc_wallet.cash],
+        )?;
+
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Load a team configuration
+    pub fn load_team_config(&self, name: &str) -> Result<TeamConfig> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, name, description, kalic_starting_capital, dc_starting_capital, created_at
+            FROM trading_teams
+            WHERE name = ?1
+            "#,
+        )?;
+
+        let config = stmt.query_row(params![name], |row| {
+            Ok(TeamConfig {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                kalic_starting_capital: row.get(3)?,
+                dc_starting_capital: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+
+        Ok(config)
+    }
+
+    /// List all team configurations
+    pub fn list_team_configs(&self) -> Result<Vec<TeamConfig>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, name, description, kalic_starting_capital, dc_starting_capital, created_at
+            FROM trading_teams
+            ORDER BY created_at DESC
+            "#,
+        )?;
+
+        let configs = stmt
+            .query_map([], |row| {
+                Ok(TeamConfig {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    kalic_starting_capital: row.get(3)?,
+                    dc_starting_capital: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })?
+            .collect::<SqliteResult<Vec<_>>>()?;
+
+        Ok(configs)
+    }
+
+    /// Get competition stats comparing KALIC and DC
+    pub fn get_competition_stats(&self) -> Result<CompetitionStats> {
+        let (kalic_cash, kalic_positions, kalic_total) = self.get_paper_portfolio_value()?;
+        let (dc_cash, dc_positions, dc_total) = self.get_dc_portfolio_value()?;
+
+        let kalic_wallet = self.get_paper_wallet()?;
+        let dc_wallet = self.get_dc_wallet()?;
+
+        // Get trade counts
+        let kalic_trades: i32 = self.conn.query_row(
+            "SELECT COUNT(*) FROM paper_trades",
+            [],
+            |row| row.get(0),
+        )?;
+        let dc_trades: i32 = self.conn.query_row(
+            "SELECT COUNT(*) FROM dc_trades",
+            [],
+            |row| row.get(0),
+        )?;
+
+        // Calculate P&L percentages
+        let kalic_starting = 1000000.0; // Default starting capital
+        let kalic_pnl_pct = ((kalic_total - kalic_starting) / kalic_starting) * 100.0;
+        let dc_pnl_pct = ((dc_total - dc_wallet.starting_capital) / dc_wallet.starting_capital) * 100.0;
+
+        // Determine leader
+        let leader = if kalic_total > dc_total {
+            "KALIC".to_string()
+        } else if dc_total > kalic_total {
+            "DC".to_string()
+        } else {
+            "TIE".to_string()
+        };
+
+        Ok(CompetitionStats {
+            kalic_total,
+            kalic_cash,
+            kalic_positions,
+            kalic_pnl_pct,
+            kalic_trades,
+            dc_total,
+            dc_cash,
+            dc_positions,
+            dc_pnl_pct,
+            dc_trades,
+            leader,
+            lead_amount: (kalic_total - dc_total).abs(),
+        })
+    }
+
+    // ========================================================================
     // AI Trading Simulator Methods
     // ========================================================================
 
@@ -3123,4 +3794,64 @@ CREATE TABLE IF NOT EXISTS circuit_breaker_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_circuit_breaker_timestamp ON circuit_breaker_events(timestamp);
+
+-- ============================================================================
+-- DC TRADER TABLES (Separate from KALIC AI paper trading)
+-- ============================================================================
+
+-- DC trader wallet (mirrors paper_wallet structure)
+CREATE TABLE IF NOT EXISTS dc_wallet (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    cash REAL NOT NULL DEFAULT 1000000.0,
+    starting_capital REAL NOT NULL DEFAULT 1000000.0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- DC positions (mirrors paper_positions structure)
+CREATE TABLE IF NOT EXISTS dc_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    entry_price REAL NOT NULL,
+    entry_date TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- DC trades (mirrors paper_trades structure)
+CREATE TABLE IF NOT EXISTS dc_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    action TEXT NOT NULL CHECK(action IN ('BUY', 'SELL')),
+    quantity REAL NOT NULL,
+    price REAL NOT NULL,
+    pnl REAL,
+    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+    notes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_dc_trades_timestamp ON dc_trades(timestamp);
+CREATE INDEX IF NOT EXISTS idx_dc_trades_symbol ON dc_trades(symbol);
+
+-- Portfolio snapshots for performance charting (both KALIC and DC)
+CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team TEXT NOT NULL CHECK(team IN ('KALIC', 'DC')),
+    date TEXT NOT NULL,
+    total_value REAL NOT NULL,
+    cash REAL NOT NULL,
+    positions_value REAL NOT NULL,
+    UNIQUE(team, date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_team_date ON portfolio_snapshots(team, date);
+
+-- Team configurations (saveable competition presets)
+CREATE TABLE IF NOT EXISTS trading_teams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    kalic_starting_capital REAL DEFAULT 1000000.0,
+    dc_starting_capital REAL DEFAULT 1000000.0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 "#;

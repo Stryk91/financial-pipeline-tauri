@@ -1231,7 +1231,7 @@ impl AiTrader {
         })
     }
 
-    /// Query AI for trading decisions
+    /// Query AI for trading decisions (with THINKING mode enabled)
     async fn query_ai_for_decisions(&self, context: &MarketContext) -> Result<Vec<ParsedDecision>> {
         let prompt = self.format_context_prompt(context);
 
@@ -1239,15 +1239,28 @@ impl AiTrader {
         for model in &self.config.model_priority {
             let mut log_entry = AiTradeLog::new(model, &prompt);
 
+            // Use query_with_thinking for extended reasoning before decisions
+            println!("[AI Trader] Querying {} with THINKING mode enabled...", model);
             match self
                 .ollama
-                .query(&prompt, Some(AI_TRADER_SYSTEM_PROMPT), Some(model))
+                .query_with_thinking(&prompt, Some(AI_TRADER_SYSTEM_PROMPT), Some(model))
                 .await
             {
-                Ok(response) => {
-                    // ALWAYS log raw response first (failsafe)
-                    log_entry.raw_response = response.clone();
-                    if let Err(e) = log_raw_response(model, &prompt, &response, None) {
+                Ok((response, thinking)) => {
+                    // Log thinking process if available
+                    if let Some(ref think_content) = thinking {
+                        println!("[AI Trader] Model thinking: {}...",
+                            &think_content.chars().take(200).collect::<String>());
+                        // Include thinking in raw response log
+                        log_entry.raw_response = format!(
+                            "=== THINKING ===\n{}\n\n=== RESPONSE ===\n{}",
+                            think_content, response
+                        );
+                    } else {
+                        log_entry.raw_response = response.clone();
+                    }
+
+                    if let Err(e) = log_raw_response(model, &prompt, &log_entry.raw_response, None) {
                         eprintln!("[AI Trader] WARNING: Failed to log raw response: {}", e);
                     }
 
@@ -1274,7 +1287,8 @@ impl AiTrader {
                                 }
                             }
 
-                            println!("[AI Trader] Decision received from model: {}", model);
+                            println!("[AI Trader] Decision received from model: {} (thinking: {})",
+                                model, if thinking.is_some() { "YES" } else { "NO" });
                             return Ok(parsed.decisions);
                         }
                         Err(e) => {

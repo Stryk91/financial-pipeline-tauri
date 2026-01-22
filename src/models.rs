@@ -512,6 +512,90 @@ pub struct PaperTrade {
 }
 
 // ============================================================================
+// DC Trader Types (Separate from KALIC AI paper trading)
+// ============================================================================
+
+/// DC trader wallet (tracks cash balance with starting capital)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DcWallet {
+    pub id: i64,
+    pub cash: f64,
+    pub starting_capital: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// DC trading position
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DcPosition {
+    pub id: i64,
+    pub symbol: String,
+    pub quantity: f64,
+    pub entry_price: f64,
+    pub entry_date: String,
+}
+
+/// DC trade history record
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DcTrade {
+    pub id: i64,
+    pub symbol: String,
+    pub action: String,
+    pub quantity: f64,
+    pub price: f64,
+    pub pnl: Option<f64>,
+    pub timestamp: String,
+    pub notes: Option<String>,
+}
+
+/// Portfolio snapshot for performance charting
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortfolioSnapshot {
+    pub id: i64,
+    pub team: String,
+    pub date: String,
+    pub total_value: f64,
+    pub cash: f64,
+    pub positions_value: f64,
+}
+
+/// Team configuration preset
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamConfig {
+    pub id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub kalic_starting_capital: f64,
+    pub dc_starting_capital: f64,
+    pub created_at: String,
+}
+
+/// Result of batch import operation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportResult {
+    pub success_count: i32,
+    pub error_count: i32,
+    pub errors: Vec<String>,
+}
+
+/// Competition statistics comparing KALIC and DC
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompetitionStats {
+    pub kalic_total: f64,
+    pub kalic_cash: f64,
+    pub kalic_positions: f64,
+    pub kalic_pnl_pct: f64,
+    pub kalic_trades: i32,
+    pub dc_total: f64,
+    pub dc_cash: f64,
+    pub dc_positions: f64,
+    pub dc_pnl_pct: f64,
+    pub dc_trades: i32,
+    pub leader: String,
+    pub lead_amount: f64,
+}
+
+// ============================================================================
 // Confluence Signal Types
 // ============================================================================
 

@@ -79,6 +79,16 @@ export async function getFavoritedSymbols(): Promise<string[]> {
     return invoke('get_favorited_symbols');
 }
 
+// Favorite all DC position symbols for auto-refresh
+export async function favoriteDcPositions(): Promise<CommandResult> {
+    return invoke('favorite_dc_positions');
+}
+
+// Favorite all KALIC position symbols for auto-refresh
+export async function favoritePaperPositions(): Promise<CommandResult> {
+    return invoke('favorite_paper_positions');
+}
+
 export async function fetchPrices(symbols: string, period: string): Promise<CommandResult> {
     return invoke('fetch_prices', { symbols, period });
 }
@@ -448,6 +458,158 @@ export async function getPaperTrades(symbol?: string, limit?: number): Promise<P
 // Reset paper trading account
 export async function resetPaperAccount(startingCash?: number): Promise<CommandResult> {
     return invoke('reset_paper_account', { startingCash });
+}
+
+// ============================================================================
+// DC TRADER (Separate from KALIC AI paper trading)
+// ============================================================================
+
+export interface DcWalletBalance {
+    cash: number;
+    positions_value: number;
+    total_equity: number;
+    starting_capital: number;
+    total_pnl: number;
+    total_pnl_percent: number;
+}
+
+export interface DcPosition {
+    id: number;
+    symbol: string;
+    quantity: number;
+    entry_price: number;
+    entry_date: string;
+    current_price: number;
+    current_value: number;
+    cost_basis: number;
+    unrealized_pnl: number;
+    unrealized_pnl_percent: number;
+}
+
+export interface DcTrade {
+    id: number;
+    symbol: string;
+    action: 'BUY' | 'SELL';
+    quantity: number;
+    price: number;
+    pnl: number | null;
+    timestamp: string;
+    notes: string | null;
+}
+
+export interface ImportResult {
+    success_count: number;
+    error_count: number;
+    errors: string[];
+}
+
+export interface PortfolioSnapshot {
+    id: number;
+    team: string;
+    date: string;
+    total_value: number;
+    cash: number;
+    positions_value: number;
+}
+
+export interface TeamConfig {
+    id: number;
+    name: string;
+    description: string | null;
+    kalic_starting_capital: number;
+    dc_starting_capital: number;
+    created_at: string;
+}
+
+export interface CompetitionStats {
+    kalic_total: number;
+    kalic_cash: number;
+    kalic_positions: number;
+    kalic_pnl_pct: number;
+    kalic_trades: number;
+    dc_total: number;
+    dc_cash: number;
+    dc_positions: number;
+    dc_pnl_pct: number;
+    dc_trades: number;
+    leader: string;
+    lead_amount: number;
+}
+
+// Get DC wallet balance and portfolio summary
+export async function getDcBalance(): Promise<DcWalletBalance> {
+    return invoke('get_dc_balance');
+}
+
+// Get all DC positions with current values
+export async function getDcPositions(): Promise<DcPosition[]> {
+    return invoke('get_dc_positions');
+}
+
+// Execute a DC trade (BUY or SELL)
+export async function executeDcTrade(
+    symbol: string,
+    action: 'BUY' | 'SELL',
+    quantity: number,
+    price?: number,
+    notes?: string
+): Promise<DcTrade> {
+    return invoke('execute_dc_trade', { symbol, action, quantity, price, notes });
+}
+
+// Get DC trade history
+export async function getDcTrades(limit?: number): Promise<DcTrade[]> {
+    return invoke('get_dc_trades', { limit });
+}
+
+// Reset DC trading account
+export async function resetDcAccount(startingCash?: number): Promise<CommandResult> {
+    return invoke('reset_dc_account', { starting_cash: startingCash });
+}
+
+// Import DC trades from CSV
+export async function importDcTradesCsv(csvContent: string): Promise<ImportResult> {
+    return invoke('import_dc_trades_csv', { csvContent });
+}
+
+// Import DC trades from JSON
+export async function importDcTradesJson(jsonContent: string): Promise<ImportResult> {
+    return invoke('import_dc_trades_json', { jsonContent });
+}
+
+// Lookup current price for a symbol
+export async function lookupCurrentPrice(symbol: string): Promise<number> {
+    return invoke('lookup_current_price', { symbol });
+}
+
+// Record portfolio snapshot for a team
+export async function recordPortfolioSnapshot(team: 'KALIC' | 'DC'): Promise<CommandResult> {
+    return invoke('record_portfolio_snapshot', { team });
+}
+
+// Get portfolio snapshots for charting
+export async function getPortfolioSnapshots(team?: 'KALIC' | 'DC', days?: number): Promise<PortfolioSnapshot[]> {
+    return invoke('get_portfolio_snapshots', { team, days });
+}
+
+// Save team configuration
+export async function saveTeamConfig(name: string, description?: string): Promise<number> {
+    return invoke('save_team_config', { name, description });
+}
+
+// Load team configuration
+export async function loadTeamConfig(name: string): Promise<TeamConfig> {
+    return invoke('load_team_config', { name });
+}
+
+// List all team configurations
+export async function listTeamConfigs(): Promise<TeamConfig[]> {
+    return invoke('list_team_configs');
+}
+
+// Get competition stats
+export async function getCompetitionStats(): Promise<CompetitionStats> {
+    return invoke('get_competition_stats');
 }
 
 // ============================================================================

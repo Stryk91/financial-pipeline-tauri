@@ -69,4 +69,6 @@ pub use ai_trader::AiTrader;
 pub use models::{
     AiTraderConfig, AiTradingSession, AiTradeDecision, AiPerformanceSnapshot,
     AiPredictionAccuracy, AiTraderStatus, BenchmarkComparison, CompoundingForecast,
+    // DC Trader types
+    DcWallet, DcPosition, DcTrade, PortfolioSnapshot, TeamConfig, ImportResult, CompetitionStats,
 };

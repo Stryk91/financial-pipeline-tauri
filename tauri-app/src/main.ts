@@ -113,6 +113,7 @@ function switchTab(tabName: string): void {
     if (tabName === 'groups') loadGroups();
     if (tabName === 'ai-search') loadVectorStats();
     if (tabName === 'ai-trader') loadAiTrader();
+    if (tabName === 'dc-trader') loadDcTrader();
 }
 
 // Initialize TradingView chart
@@ -1984,6 +1985,353 @@ async function aiEvaluatePredictions(): Promise<void> {
     }
 }
 
+// ============================================================================
+// DC TRADER FUNCTIONS
+// ============================================================================
+
+async function loadDcTrader(): Promise<void> {
+    try {
+        // Load DC balance
+        const balance = await api.getDcBalance();
+        updateDcBalance(balance);
+
+        // Load positions
+        const positions = await api.getDcPositions();
+        updateDcPositions(positions);
+
+        // Load trades
+        const trades = await api.getDcTrades(50);
+        updateDcTrades(trades);
+
+        // Load competition stats
+        const stats = await api.getCompetitionStats();
+        updateCompetitionStats(stats);
+
+        // Load team configs
+        await loadTeamConfigs();
+
+        log('DC Trader data loaded', 'success');
+    } catch (error) {
+        log(`Error loading DC Trader: ${error}`, 'error');
+    }
+}
+
+function updateDcBalance(balance: api.DcWalletBalance): void {
+    const portfolioEl = document.getElementById('dc-portfolio-value');
+    const changeEl = document.getElementById('dc-portfolio-change');
+    const cashEl = document.getElementById('dc-cash');
+    const positionsEl = document.getElementById('dc-positions-value');
+
+    if (portfolioEl) portfolioEl.textContent = `$${balance.total_equity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (cashEl) cashEl.textContent = `$${balance.cash.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (positionsEl) positionsEl.textContent = `$${balance.positions_value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+    if (changeEl) {
+        const sign = balance.total_pnl_percent >= 0 ? '+' : '';
+        changeEl.textContent = `${sign}${balance.total_pnl_percent.toFixed(2)}%`;
+        changeEl.className = 'ai-stat-change ' + (balance.total_pnl_percent >= 0 ? 'positive' : 'negative');
+    }
+}
+
+function updateDcPositions(positions: api.DcPosition[]): void {
+    const container = document.getElementById('dc-positions-list');
+    if (!container) return;
+
+    if (positions.length === 0) {
+        container.innerHTML = '<div class="empty-state">No positions. Execute a trade to get started.</div>';
+        return;
+    }
+
+    container.innerHTML = positions.map(pos => {
+        const pnlClass = pos.unrealized_pnl >= 0 ? 'positive' : 'negative';
+        const sign = pos.unrealized_pnl >= 0 ? '+' : '';
+        return `
+            <div class="ai-decision-item" style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <strong>${pos.symbol}</strong>
+                    <span style="color: var(--text-secondary); margin-left: 8px;">${pos.quantity} shares @ $${pos.entry_price.toFixed(2)}</span>
+                </div>
+                <div style="text-align: right;">
+                    <span>$${pos.current_value.toFixed(2)}</span>
+                    <span class="${pnlClass}" style="margin-left: 8px;">${sign}$${pos.unrealized_pnl.toFixed(2)}</span>
+                    <button class="btn-secondary dc-quick-sell" data-symbol="${pos.symbol}" data-qty="${pos.quantity}" style="margin-left: 12px; padding: 4px 8px;">SELL</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    // Add quick sell handlers
+    container.querySelectorAll('.dc-quick-sell').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const symbol = btn.getAttribute('data-symbol');
+            const qty = parseFloat(btn.getAttribute('data-qty') || '0');
+            if (symbol && qty > 0) {
+                try {
+                    await api.executeDcTrade(symbol, 'SELL', qty);
+                    log(`Sold ${qty} ${symbol}`, 'success');
+                    await loadDcTrader();
+                } catch (error) {
+                    log(`Error selling: ${error}`, 'error');
+                }
+            }
+        });
+    });
+}
+
+function updateDcTrades(trades: api.DcTrade[]): void {
+    const container = document.getElementById('dc-trades-list');
+    const todayEl = document.getElementById('dc-trades-today');
+    if (!container) return;
+
+    // Count today's trades
+    const today = new Date().toISOString().split('T')[0];
+    const todayTrades = trades.filter(t => t.timestamp.startsWith(today)).length;
+    if (todayEl) todayEl.textContent = todayTrades.toString();
+
+    if (trades.length === 0) {
+        container.innerHTML = '<div class="empty-state">No trades yet.</div>';
+        return;
+    }
+
+    container.innerHTML = trades.map(trade => {
+        const time = new Date(trade.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        const actionClass = trade.action === 'BUY' ? 'positive' : 'negative';
+        const pnlText = trade.pnl ? ` (${trade.pnl >= 0 ? '+' : ''}$${trade.pnl.toFixed(2)})` : '';
+        const notesText = trade.notes ? ` - "${trade.notes}"` : '';
+        return `
+            <div class="ai-decision-item">
+                <span style="color: var(--text-secondary);">${time}</span>
+                <span class="${actionClass}" style="margin-left: 8px;">${trade.action}</span>
+                <strong style="margin-left: 8px;">${trade.symbol}</strong>
+                <span style="margin-left: 8px;">${trade.quantity} @ $${trade.price.toFixed(2)}${pnlText}</span>
+                <span style="color: var(--text-secondary); margin-left: 8px;">${notesText}</span>
+            </div>
+        `;
+    }).join('');
+}
+
+function updateCompetitionStats(stats: api.CompetitionStats): void {
+    // KALIC stats
+    const kalicTotal = document.getElementById('dc-kalic-total');
+    const kalicPnl = document.getElementById('dc-kalic-pnl');
+    const kalicTrades = document.getElementById('dc-kalic-trades');
+
+    if (kalicTotal) kalicTotal.textContent = `$${stats.kalic_total.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+    if (kalicPnl) {
+        const sign = stats.kalic_pnl_pct >= 0 ? '+' : '';
+        kalicPnl.textContent = `${sign}${stats.kalic_pnl_pct.toFixed(2)}%`;
+        kalicPnl.className = 'ai-stat-change ' + (stats.kalic_pnl_pct >= 0 ? 'positive' : 'negative');
+    }
+    if (kalicTrades) kalicTrades.textContent = `${stats.kalic_trades} trades`;
+
+    // DC stats
+    const dcTotal = document.getElementById('dc-dc-total');
+    const dcPnl = document.getElementById('dc-dc-pnl');
+    const dcTrades = document.getElementById('dc-dc-trades');
+
+    if (dcTotal) dcTotal.textContent = `$${stats.dc_total.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+    if (dcPnl) {
+        const sign = stats.dc_pnl_pct >= 0 ? '+' : '';
+        dcPnl.textContent = `${sign}${stats.dc_pnl_pct.toFixed(2)}%`;
+        dcPnl.className = 'ai-stat-change ' + (stats.dc_pnl_pct >= 0 ? 'positive' : 'negative');
+    }
+    if (dcTrades) dcTrades.textContent = `${stats.dc_trades} trades`;
+
+    // Leader
+    const leaderEl = document.getElementById('dc-leader-text');
+    if (leaderEl) {
+        if (stats.leader === 'TIE') {
+            leaderEl.textContent = 'TIE';
+        } else {
+            leaderEl.textContent = `LEADER: ${stats.leader} (+$${stats.lead_amount.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })})`;
+        }
+    }
+}
+
+async function loadTeamConfigs(): Promise<void> {
+    try {
+        const configs = await api.listTeamConfigs();
+        const select = document.getElementById('dc-config-select') as HTMLSelectElement;
+        if (select) {
+            select.innerHTML = '<option value="">-- Select Config --</option>' +
+                configs.map(c => `<option value="${c.name}">${c.name}</option>`).join('');
+        }
+    } catch (error) {
+        // Configs may not exist yet
+    }
+}
+
+async function executeDcTrade(): Promise<void> {
+    const symbolEl = document.getElementById('dc-symbol') as HTMLInputElement;
+    const quantityEl = document.getElementById('dc-quantity') as HTMLInputElement;
+    const priceEl = document.getElementById('dc-price') as HTMLInputElement;
+    const notesEl = document.getElementById('dc-notes') as HTMLInputElement;
+    const actionEl = document.querySelector('input[name="dc-action"]:checked') as HTMLInputElement;
+
+    const symbol = symbolEl?.value?.trim().toUpperCase();
+    const quantity = parseFloat(quantityEl?.value || '0');
+    const price = priceEl?.value ? parseFloat(priceEl.value) : undefined;
+    const notes = notesEl?.value?.trim() || undefined;
+    const action = actionEl?.value as 'BUY' | 'SELL';
+
+    if (!symbol || !quantity || quantity <= 0) {
+        log('Please enter a valid symbol and quantity', 'error');
+        return;
+    }
+
+    try {
+        const trade = await api.executeDcTrade(symbol, action, quantity, price, notes);
+        log(`DC Trade: ${action} ${quantity} ${symbol} @ $${trade.price.toFixed(2)}`, 'success');
+
+        // Clear form
+        symbolEl.value = '';
+        quantityEl.value = '';
+        priceEl.value = '';
+        notesEl.value = '';
+
+        await loadDcTrader();
+    } catch (error) {
+        log(`Trade error: ${error}`, 'error');
+    }
+}
+
+async function lookupDcPrice(): Promise<void> {
+    const symbolEl = document.getElementById('dc-symbol') as HTMLInputElement;
+    const priceEl = document.getElementById('dc-price') as HTMLInputElement;
+    const symbol = symbolEl?.value?.trim().toUpperCase();
+
+    if (!symbol) {
+        log('Enter a symbol first', 'error');
+        return;
+    }
+
+    try {
+        const price = await api.lookupCurrentPrice(symbol);
+        if (priceEl) priceEl.value = price.toFixed(2);
+        log(`${symbol} current price: $${price.toFixed(2)}`, 'success');
+    } catch (error) {
+        log(`Price lookup failed: ${error}`, 'error');
+    }
+}
+
+async function importDcTradesCsv(): Promise<void> {
+    const contentEl = document.getElementById('dc-import-content') as HTMLTextAreaElement;
+    const resultEl = document.getElementById('dc-import-result');
+    const content = contentEl?.value?.trim();
+
+    if (!content) {
+        log('Paste CSV content first', 'error');
+        return;
+    }
+
+    try {
+        const result = await api.importDcTradesCsv(content);
+        const msg = `Imported ${result.success_count} trades, ${result.error_count} errors`;
+        if (resultEl) resultEl.textContent = msg;
+        log(msg, result.error_count > 0 ? 'error' : 'success');
+        if (result.errors.length > 0) {
+            result.errors.forEach(err => log(err, 'error'));
+        }
+        contentEl.value = '';
+        await loadDcTrader();
+    } catch (error) {
+        log(`Import error: ${error}`, 'error');
+    }
+}
+
+async function importDcTradesJson(): Promise<void> {
+    const contentEl = document.getElementById('dc-import-content') as HTMLTextAreaElement;
+    const resultEl = document.getElementById('dc-import-result');
+    const content = contentEl?.value?.trim();
+
+    if (!content) {
+        log('Paste JSON content first', 'error');
+        return;
+    }
+
+    try {
+        const result = await api.importDcTradesJson(content);
+        const msg = `Imported ${result.success_count} trades, ${result.error_count} errors`;
+        if (resultEl) resultEl.textContent = msg;
+        log(msg, result.error_count > 0 ? 'error' : 'success');
+        if (result.errors.length > 0) {
+            result.errors.forEach(err => log(err, 'error'));
+        }
+        contentEl.value = '';
+        await loadDcTrader();
+    } catch (error) {
+        log(`Import error: ${error}`, 'error');
+    }
+}
+
+async function resetDcAccount(): Promise<void> {
+    try {
+        await api.resetDcAccount(1000000);
+        log('DC account reset to $1,000,000', 'success');
+        await loadDcTrader();
+    } catch (error) {
+        log(`Reset error: ${error}`, 'error');
+    }
+}
+
+async function saveTeamConfig(): Promise<void> {
+    const nameEl = document.getElementById('dc-config-name') as HTMLInputElement;
+    const descEl = document.getElementById('dc-config-desc') as HTMLInputElement;
+    const name = nameEl?.value?.trim();
+    const description = descEl?.value?.trim() || undefined;
+
+    if (!name) {
+        log('Enter a config name', 'error');
+        return;
+    }
+
+    try {
+        await api.saveTeamConfig(name, description);
+        log(`Config "${name}" saved`, 'success');
+        await loadTeamConfigs();
+        nameEl.value = '';
+        descEl.value = '';
+    } catch (error) {
+        log(`Save error: ${error}`, 'error');
+    }
+}
+
+async function recordDcSnapshot(): Promise<void> {
+    try {
+        await api.recordPortfolioSnapshot('DC');
+        await api.recordPortfolioSnapshot('KALIC');
+        log('Recorded snapshots for DC and KALIC', 'success');
+    } catch (error) {
+        log(`Snapshot error: ${error}`, 'error');
+    }
+}
+
+async function syncDcPrices(): Promise<void> {
+    try {
+        // Add DC positions to auto-refresh favorites
+        const result = await api.favoriteDcPositions();
+        log(result.message, 'success');
+
+        // Also add KALIC positions
+        const result2 = await api.favoritePaperPositions();
+        log(result2.message, 'success');
+
+        // Now fetch fresh prices for all favorited symbols
+        const favorites = await api.getFavoritedSymbols();
+        if (favorites.length > 0) {
+            const symbolList = favorites.join(',');
+            log(`Fetching prices for ${favorites.length} symbols...`, 'info');
+            const fetchResult = await api.fetchPrices(symbolList, '1d');
+            log(fetchResult.message, fetchResult.success ? 'success' : 'error');
+        }
+
+        // Refresh DC trader display
+        await loadDcTrader();
+    } catch (error) {
+        log(`Sync error: ${error}`, 'error');
+    }
+}
+
 // Event listeners
 function setupEventListeners(): void {
     // Tab switching
@@ -2286,6 +2634,16 @@ function setupEventListeners(): void {
     document.getElementById('ai-run-cycle-btn')?.addEventListener('click', aiRunCycle);
     document.getElementById('ai-reset-btn')?.addEventListener('click', aiReset);
     document.getElementById('ai-evaluate-btn')?.addEventListener('click', aiEvaluatePredictions);
+
+    // DC Trader
+    document.getElementById('dc-execute-trade-btn')?.addEventListener('click', executeDcTrade);
+    document.getElementById('dc-lookup-price-btn')?.addEventListener('click', lookupDcPrice);
+    document.getElementById('dc-import-csv-btn')?.addEventListener('click', importDcTradesCsv);
+    document.getElementById('dc-import-json-btn')?.addEventListener('click', importDcTradesJson);
+    document.getElementById('dc-reset-account-btn')?.addEventListener('click', resetDcAccount);
+    document.getElementById('dc-save-config-btn')?.addEventListener('click', saveTeamConfig);
+    document.getElementById('dc-sync-prices-btn')?.addEventListener('click', syncDcPrices);
+    document.getElementById('dc-snapshot-btn')?.addEventListener('click', recordDcSnapshot);
 }
 
 // Initialize
